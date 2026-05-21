@@ -5,38 +5,48 @@ description: Auto-loaded helper for running Cadence retrospectives. Activates wh
 
 # Cadence retrospective helper
 
-> ⚠️ **Stub — Phase 1.**
+A Cadence retrospective is a structured pass, not a free-form chat.
+Use the four-layer fix mapping for every observed issue.
 
-## What this skill will load (Phase 1)
+## The mechanical pass
 
-When activated, it should provide Claude with:
-
-### The four-layer fix mapping table
-
-For each observed issue:
+For each issue observed (Reviewer flags + near-misses), fill a row:
 
 | Field | Value |
 |---|---|
-| What happened | one-line description |
+| What happened | one-line description of the issue |
 | Auto-catchable? | yes (what would catch it) / no (judgment call) |
 | Rule existed? | yes (cite ADR / PATTERNS §) / no |
 | Proposed fix | concrete action with file paths |
-| Fix layer | **3** (Automated) > **1** (Patterns) > **2** (Process) > **4** (Launch) |
+| Fix layer | **3** > **1** > **2** > **4** |
 
-Preference order: **higher numbers descending into lower**. If Layer 3
-automation can catch it, automate; only fall to Layer 1 docs when
-automation can't. Layer 4 is the last resort.
+## The four valid fix layers
 
-### The output format (Keep a Changelog 1.1.0 style)
+Preference: **higher numbers descending into lower**. Automate where
+possible; doc-only as fallback.
+
+| Layer | Use when | Concrete action |
+|---|---|---|
+| **3 (Automated)** | Mechanically detectable | Add lint, schema, or boundary rule |
+| **1 (Patterns)** | Judgment call with defensible answer | Write ADR + update PATTERNS.md |
+| **2 (Process)** | Coordination issue, not code | Update DoD / ROLE_SPECS / TEAM_PROTOCOL |
+| **4 (Launch)** | Launch-prompt ambiguity | Update TEAM_LAUNCH_TEMPLATE |
+
+If you can't place a fix in one of these four layers, the fix isn't
+concrete enough yet.
+
+## Output format (Keep a Changelog 1.1.0)
+
+Append to `docs/FRAMEWORK_CHANGELOG.md`:
 
 ```markdown
 ## YYYY-MM-DD — <feature> retrospective
 
 ### Issues observed
 - **<issue>**: <description>
-  - Auto-catchable? <yes/no — and what>
+  - Auto-catchable? <yes/no — what>
   - Existing rule? <yes/no — link>
-  - Fix: <layer> — <action>
+  - Fix: Layer <N> — <concrete action>
 
 ### Near-misses / gaps
 - ...
@@ -50,11 +60,32 @@ automation can't. Layer 4 is the last resort.
 - [ ] Rejected: <fix> — reason: <...>
 ```
 
-### Anti-patterns
+## Anti-patterns to flag
 
-- "Everything went great" → push back, find at least one improvement
+- "Everything went great" → push back; find at least one improvement
 - Proposing a doc fix when automation would work
-- Rejecting a fix without a recorded reason
-- Not appending to `FRAMEWORK_CHANGELOG.md`
+- Rejecting a fix without recording a reason
+- Lead applying changes silently — every framework change appears in
+  the changelog with a triggering retrospective
 
-See: [docs/self-improvement-loop.md](../../docs/self-improvement-loop.md)
+## Verifying Layer 3 fixes
+
+After adding a new automated rule (lint, boundary, etc.), confirm it
+actually fires on the original violation that triggered it. A rule
+that doesn't fire on its own trigger case is worse than no rule —
+it's misleading.
+
+## Upstreaming a finding
+
+If the issue is generic (would affect other Cadence users, not just
+this project), suggest the user open a Framework Finding at:
+
+https://github.com/nik190799/cadence/issues/new?template=framework_finding.md
+
+The community loop is opt-in but it's how the canonical framework
+grows.
+
+## Source of truth
+
+The full protocol is at `docs/RETROSPECTIVE_PROTOCOL.md`. This skill
+is a condensed cheat sheet; the user's local doc is authoritative.

@@ -1,68 +1,121 @@
 ---
 name: cadence-init
 description: Scaffold the Cadence framework into the current repository. Use when the user runs /cadence-init or asks to set up the Cadence framework, install patterns, bootstrap docs/ADRs/verify scripts, or initialize the four-layer development framework in a repo.
-argument-hint: "[stack-hint: typescript | python | go | rust | java | dart-flutter | auto]"
+argument-hint: "[stack-hint: typescript | python | go | rust | java | dart-flutter | auto] [--upgrade]"
 ---
 
 # /cadence-init
 
-> ⚠️ **Stub — Phase 1.** This skill's full behavior is implemented in
-> Phase 1. Currently it documents intended behavior only.
+You are scaffolding the Cadence framework into the user's project. Be
+methodical, never destructive, and confirm before overwriting any
+file the user might have customized.
 
-## Intended behavior
+## Inputs
 
-When the user runs `/cadence-init`, this skill should:
+- Optional positional argument: stack hint (one of `typescript`,
+  `python`, `go`, `rust`, `java`, `dart-flutter`, `auto`). Default
+  `auto`.
+- Optional flag: `--upgrade` (re-runs against an existing Cadence
+  install; uses three-way diff instead of straight copy).
 
-1. **Detect the project's stack** from common markers (or use the
-   provided hint):
-   - `package.json` → typescript / javascript
-   - `pyproject.toml`, `requirements.txt`, `setup.py` → python
-   - `go.mod` → go
-   - `Cargo.toml` → rust
-   - `pubspec.yaml` → dart-flutter
-   - `pom.xml`, `build.gradle`, `build.gradle.kts` → java
-   - Unknown → ask the user, default to "generic"
+## Step 1 — Detect stack
 
-2. **Write `.cadence/cadence.yaml`** prefilled with the stack's
-   default commands and a starter `boundaries:` block (empty in v1;
-   user fills in based on their architecture).
+Look at the current working directory for these markers (in order):
 
-3. **Copy `templates/docs/`** into the user's repo at `docs/`,
-   substituting any `{{stack}}` placeholders.
+| Marker | Stack |
+|---|---|
+| `pubspec.yaml` | `dart-flutter` |
+| `Cargo.toml` | `rust` |
+| `go.mod` | `go` |
+| `pyproject.toml`, `requirements.txt`, `setup.py`, `Pipfile` | `python` |
+| `pom.xml`, `build.gradle`, `build.gradle.kts` | `java` |
+| `package.json` | `typescript` (assume TS unless only JS files exist) |
 
-4. **Copy `templates/scripts/verify.{sh,ps1}`** into the user's
-   `scripts/` directory.
+If `auto` is the hint and no marker matches, ask the user to pick.
 
-5. **Copy `templates/tool/check_boundaries.py`** into the user's
-   `tool/` directory.
+## Step 2 — Generate `.cadence/cadence.yaml`
 
-6. **Copy `templates/.github/workflows/cadence.yml.tmpl`** into the
-   user's `.github/workflows/cadence.yml`.
+Read the matching recipe from the plugin's `recipes/<stack>.yaml`. Copy
+its content to `.cadence/cadence.yaml`, replacing any placeholders
+(e.g., `{{pkg}}` in the python recipe) by prompting the user.
 
-7. **Patch `CLAUDE.md`** (creating it if absent) with a pointer block:
+If the file already exists and we're NOT in `--upgrade` mode, refuse
+and tell the user to pass `--upgrade`.
 
-   ```markdown
-   ## Cadence framework
+## Step 3 — Copy templates
 
-   This repository uses the Cadence framework. Before any work:
-   - Read `docs/PATTERNS.md` for codebase conventions
-   - Read `docs/DEFINITION_OF_DONE.md` for the done checklist
-   - Run `scripts/verify` before declaring work done
-   - For new judgment calls, follow `docs/ADR/0000-template.md`
-   ```
+For each file in the plugin's `templates/` tree, copy to the
+corresponding path in the user's repo:
 
-8. **Print a "next steps" summary** with `/cadence-launch` and
-   `/cadence-verify` suggestions.
+- `templates/docs/*.md.tmpl` → `docs/*.md` (strip the `.tmpl` extension)
+- `templates/docs/ADR/*.md.tmpl` → `docs/ADR/*.md`
+- `templates/scripts/verify.sh` → `scripts/verify.sh` (+ make executable)
+- `templates/scripts/verify.ps1` → `scripts/verify.ps1`
+- `templates/tool/check_boundaries.py` → `tool/check_boundaries.py`
+- `templates/.github/workflows/cadence.yml.tmpl` → `.github/workflows/cadence.yml`
+- `templates/CLAUDE.md.tmpl` → append to existing `CLAUDE.md` (or
+  create new); preserve any user content above the Cadence section.
 
-## Upgrade mode
+For each `.tmpl` file, substitute placeholders:
+- `{{project_name}}` → directory name of the project
+- `{{init_date}}` → today's date (YYYY-MM-DD)
+- `{{cadence_version}}` → plugin version from `.claude-plugin/plugin.json`
+- `{{src_root}}`, `{{ext}}`, `{{lang}}` → stack-appropriate values
+  (see table below)
 
-When invoked as `/cadence-init --upgrade`:
+| Stack | src_root | ext | lang |
+|---|---|---|---|
+| typescript | `src` | `ts` | `typescript` |
+| python | `src/<pkg>` | `py` | `python` |
+| go | `internal` | `go` | `go` |
+| rust | `src` | `rs` | `rust` |
+| java | `src/main/java/<pkg>` | `java` | `java` |
+| dart-flutter | `lib` | `dart` | `dart` |
 
-- Read existing `.cadence/cadence.yaml`
-- Diff the user's `docs/` (project overrides) against `templates/docs/`
-  (latest core)
-- Present a three-way diff (old core / new core / user overrides) for
-  each changed file, prompting the user row-by-row before writing
-- Never silently overwrite project-overrides
+## Step 4 — Pre-flight (do NOT skip)
 
-See: [docs/self-improvement-loop.md](../../docs/self-improvement-loop.md)
+Before writing any file:
+1. Run `git status --porcelain` to confirm the user has a clean working
+   tree (or warn them and ask to proceed)
+2. List every file that will be created or modified
+3. Ask the user "Proceed?" unless `--non-interactive` is set
+
+## Step 5 — `--upgrade` mode
+
+If `--upgrade` was passed:
+1. For each `templates/<file>` that already exists in the user's repo:
+   - Compute three diffs: old-core vs new-core, new-core vs user's-current
+   - Present the diff and ask: accept (overwrite), keep-mine (skip),
+     merge (open in editor)
+2. Never silently overwrite project overrides
+3. The `.tmpl` placeholders are re-substituted with current values
+
+## Step 6 — Print next steps
+
+After successful scaffold, print:
+
+```
+Cadence v<version> installed.
+
+Files created:
+  docs/ (10 files)
+  scripts/verify.{sh,ps1}
+  tool/check_boundaries.py
+  .cadence/cadence.yaml
+  .github/workflows/cadence.yml
+  CLAUDE.md (patched)
+
+Next steps:
+  1. Review docs/PATTERNS.md and adjust §1 layer rules for your project.
+  2. Edit .cadence/cadence.yaml to confirm commands.{format,lint,test}.
+  3. Run /cadence-verify to baseline your current code.
+  4. Use /cadence-launch <feature> to spawn a Cadence team.
+  5. After each team run, /cadence-retro to grow the framework.
+```
+
+## Safety rules
+
+- NEVER overwrite a file without explicit user approval (or `--upgrade`
+  with three-way diff approval)
+- NEVER touch `.git/`, `node_modules/`, `.venv/`, or other generated dirs
+- If anything is ambiguous, ask before acting

@@ -1,58 +1,159 @@
 # Patterns — canonical reference
 
-> ⚠️ **Stub — Phase 1.** This template will land with the full
-> stack-agnostic patterns reference extracted from the Flutter sandbox
-> and generalized.
+This doc is the **single source of truth** for how code is structured
+in this project. Every teammate (human or agent) reads this before
+writing code. The Reviewer cites violations against this doc by section
+number.
+
+Patterns here are derived from the [ADR records](./ADR/). When in
+doubt, read the ADR — it explains *why* the pattern is what it is.
 
 ## §1 — Layer rules (mechanically enforced)
 
-Your project's layer rules are encoded in `.cadence/cadence.yaml`
-under `boundaries:`. The boundary checker (`tool/check_boundaries.py`)
-enforces them on every `scripts/verify` run.
+```
+{{src_root}}/
+  app/                # Cross-cutting providers, routing, theme
+    providers.{{ext}} # All narrow function-typed providers live here
+  core/               # Cross-cutting infra (logging, retry, telemetry)
+  data/
+    sources/          # ONLY layer allowed to import external systems
+                      # (Firestore, HTTP clients, native plugins). Leaf.
+    repositories/     # Domain-shaped API over sources
+  domain/
+    models/           # Plain value types — no framework deps
+  features/<name>/
+    <name>_screen.{{ext}}      # UI; reads narrow providers
+    <name>_controller.{{ext}}  # State + mutations
+    widgets/                   # Screen-private widgets
+  shared/
+    widgets/          # Reusable across features
+    utils/            # Pure functions, no framework deps
+```
 
-Default boundaries assumed by Cadence:
+**Enforced by `tool/check_boundaries.py` (reads `.cadence/cadence.yaml`):**
 
 - `features/**` may NOT import `data/sources/**` or `data/repositories/**`
 - `data/sources/**` may NOT import `features/**` or `app/**`
 - `app/**` may NOT import `features/**` (cycle avoidance)
 - Models live under `domain/models/**` (NEVER `data/models/**`)
 
-Customize for your project in `cadence.yaml`.
+Violations fail CI. See ADR-0001 (boundaries) and ADR-0002 (model
+location) for rationale.
 
 ## §2 — Controller shape
 
-Document the project's chosen state-management pattern and which
-controller shape to use when.
+| Screen kind | Shape | Test required |
+|---|---|---|
+| Stateful + async load + mutations | `AsyncNotifier` / `useAsync` / equivalent | Yes |
+| Stateful + sync only | `Notifier` / `useState` / equivalent | Yes |
+| Read-only + one-shot async load | `FutureProvider` / single hook | Only if logic |
+| Pure static UI | Plain component reading cross-cutting providers if any | No |
 
 ## §3 — Narrow function-typed providers
 
-Feature code reads narrow providers, not repositories directly. See
-ADR-NNNN.
+Feature code never reads repositories directly. It reads **narrow
+function-typed providers** that close over the exact method the feature
+needs.
 
-## §4 — Mutation pattern
+```{{lang}}
+// In app/providers.{{ext}}
+type CountReader = () => Promise<number>;
+const countReaderProvider = Provider<CountReader>(
+  (ref) => () => ref.read(countRepositoryProvider).current(),
+);
+```
 
-Optimistic-then-write (default per ADR-NNNN), with documented exceptions.
+Tests override the closure, not the whole repository:
+
+```{{lang}}
+ProviderContainer(overrides: [
+  countReaderProvider.overrideWithValue(async () => 7),
+]);
+```
+
+Adapt the syntax above to your stack. The shape is universal.
+
+## §4 — Mutation pattern (optimistic-then-write)
+
+Per ADR-0003 (mutation pattern), **every mutation in a controller
+follows optimistic-then-write**:
+
+```{{lang}}
+async function increment() {
+  const next = (state.valueOrNull ?? 0) + 1;
+  state = AsyncData(next);                    // 1. optimistic UI update
+  try {
+    await writerProvider.read()(next);         // 2. persist
+  } catch (e, st) {
+    state = AsyncError(e, st);                 // 3. surface error
+  }
+}
+```
+
+For list mutations, compute the optimistic value locally (don't
+re-read). The source is the authority on persistence, not on UI state.
+
+**The Reviewer rejects write-then-re-read** unless the controller has a
+documented reason (server-assigned IDs, etc.).
 
 ## §5 — Error surface
 
-Three levels: whole-screen `AsyncError`, per-action state field,
-per-row map. See ADR-NNNN.
+Per ADR-0004 (error surface):
+
+- **Async mutations** wrap the persist call in try/catch and set
+  `state = AsyncError(e, st)` on failure. No silent swallowing.
+- **Per-field errors** (one row's update failed, others didn't) use a
+  state class with a `fieldErrors: Map<String, Object?>` field.
+- **Logging**: use the project's structured logger; never bare `print`
+  / `console.log`. PII passes through redaction helpers.
 
 ## §6 — UI async invocation
 
-Wrap fire-and-forget async calls per the project's stack convention
-(`unawaited()` for Dart, `void` cast for TS, etc.).
+Per ADR-0005 (UI async), all fire-and-forget async calls from UI
+handlers explicitly mark the discard:
+
+```{{lang}}
+// ✅ canonical
+onPress: () => unawaited(controller.delete(id))
+
+// ❌ implicit discard — Reviewer rejects
+onPress: () => controller.delete(id)
+```
+
+The wrapper makes "I am intentionally not awaiting this" visible.
 
 ## §7 — Test requirements
 
-Per ADR-NNNN: happy + edge + sequence + error + write log.
+Per ADR-0006 (test coverage). For every controller, the test file at
+`tests/features/<name>/<name>_controller_test.{{ext}}` contains:
+
+1. **One happy-path test per public method**
+2. **At least one edge case** per public method (where applicable)
+3. **One sequence test** that exercises 3+ mutations in order
+4. **One error test** if the method has an error path
+5. **Write log assertion** in every mutation test — state alone is not
+   enough; assert what was sent to the writer
 
 ## §8 — Style
 
-Per the project's lint config in `cadence.yaml` `commands.lint`.
+The project's lint configuration in `.cadence/cadence.yaml`
+`commands.lint` enforces:
+
+- Single-quote convention (or whatever your stack prefers)
+- Const / immutability preferences
+- No inline color literals in feature files (centralize in theme)
+- Trailing commas in multi-line constructors
+- Project's preferred async-await patterns
 
 ## §9 — How patterns evolve
 
-The retrospective protocol (`docs/RETROSPECTIVE_PROTOCOL.md`) is the
-only sanctioned path. Every change to this file lands with a
-corresponding `docs/FRAMEWORK_CHANGELOG.md` entry.
+This doc is **not frozen**. When a team run uncovers a judgment call
+not covered here, the retrospective process
+([RETROSPECTIVE_PROTOCOL.md](./RETROSPECTIVE_PROTOCOL.md)) either:
+
+- Adds a section here (with a new ADR backing it), or
+- Tightens an existing section to remove ambiguity, or
+- Adds an automated check that makes the rule mechanical instead.
+
+Every change lands together with an entry in
+[FRAMEWORK_CHANGELOG.md](./FRAMEWORK_CHANGELOG.md).

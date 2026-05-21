@@ -6,14 +6,54 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
-### Planned for v0.1.0 (Phase 1)
-- Implement the 9 SKILL.md skills (6 slash + 3 auto-invoked)
-- Implement 4 subagent definitions
-- Implement language-agnostic `tool/check_boundaries.py`
-- Implement `scripts/verify.{sh,ps1}` orchestrators
-- Implement 6 stack recipes
-- Implement NIST SSDF v1.1 and ISO 25010:2023 standards mappings
-- Submit to Claude Code marketplace
+### Planned for v0.2.0
+- Marketplace submission PR against `anthropics/claude-plugins-official`
+- Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
+  trigger when basic line-pattern matching produces false positives
+- npx CLI for non-Claude-Code users (Codex, Gemini CLI, Cline)
+
+## [0.1.0] — 2026-05-21
+
+### Added — Phase 1 implementation
+
+- **Real `tool/check_boundaries.py`** — language-agnostic import-boundary
+  checker. Handles path-form (TS/JS/Dart/Go), dotted-form
+  (Python/Java), and colon-form (Rust) imports. Word-boundary
+  matching avoids false positives like `app.` inside `myapp.`. 14
+  tests covering happy paths, edge cases, and language-specific
+  forms.
+- **Real `scripts/verify.{sh,ps1}`** — orchestrate format → lint →
+  boundary → test from `.cadence/cadence.yaml`. Fail-fast with
+  DoD-shaped summary.
+- **Real bodies for all 9 skills** — `cadence-init`, `cadence-launch`,
+  `cadence-verify`, `cadence-retro`, `cadence-adr`, `cadence-compliance`
+  (slash commands); `cadence-framework`, `cadence-retrospective-helper`,
+  `cadence-adr-writer` (auto-invoked).
+- **Real subagent system prompts** for the four roles: data engineer,
+  feature engineer, tester, reviewer. Each reads `.cadence/cadence.yaml`
+  on session start to learn the project's paths.
+- **Full template content** for all `templates/docs/*.md.tmpl` —
+  PATTERNS, DoD, ROLE_SPECS, TEAM_PROTOCOL, RETROSPECTIVE_PROTOCOL,
+  TEAM_LAUNCH_TEMPLATE, FRAMEWORK_CHANGELOG, ADR template + index,
+  CLAUDE.md patcher, GitHub Actions workflow.
+- **Full standards mappings:**
+  - `standards/nist-ssdf-1.1.yaml` — all PO/PS/PW/RV practices with
+    artifact mappings
+  - `standards/iso-25010-2023.yaml` — all 9 characteristics (including
+    the new Safety characteristic from Edition 2) with sub-characteristics
+- **Tightened JSON schemas** — `cadence-yaml.schema.json` and
+  `retro.schema.json` now have validation constraints (required fields,
+  enum constraints for fix_layer, pattern checks for SSDF practice IDs).
+- **CI improvements:**
+  - `boundary-check-fixtures` job: runs pytest on every push
+  - `validate-cadence-yaml-schema` job: validates every recipe and
+    fixture cadence.yaml against the schema
+- **Test fixtures** for TypeScript and Python projects with deliberate
+  boundary violations to exercise the checker.
+
+### Changed
+- `plugin.json` version 0.0.1 → 0.1.0
+- README status line updated to reflect Phase 1 complete
 
 ## [0.0.1] — 2026-05-21
 

@@ -5,51 +5,121 @@ description: Drive the Cadence retrospective protocol after a team run. For each
 
 # /cadence-retro
 
-> ⚠️ **Stub — Phase 1.**
+You are driving the structured Cadence retrospective per
+`docs/RETROSPECTIVE_PROTOCOL.md`. This is the framework's
+self-improvement engine.
 
-## Intended behavior
+## Step 1 — Gather signal
 
-1. **Gather signal** from the just-completed work:
-   - `git log` since last tag or last commit on a feature branch
-   - Recent verify run output (from `scripts/verify` cache if any)
-   - Conversation transcript of the team run (if accessible)
+Read these inputs:
+- `git log` since last tag or last commit on a feature branch
+- Recent verify run output (re-run `scripts/verify` if needed)
+- The conversation transcript of the team run (whatever's in current
+  context)
+- Current state of: `docs/PATTERNS.md`, `docs/DEFINITION_OF_DONE.md`,
+  any new files in this branch
 
-2. **Walk the four-layer fix mapping table** (from
-   `docs/RETROSPECTIVE_PROTOCOL.md`) for each observed issue:
+## Step 2 — Draft the table
 
-   | Field | Value |
-   |---|---|
-   | What happened | (one-line description) |
-   | Auto-catchable? | yes / no — and what would catch it |
-   | Existing rule? | yes (cite ADR / section) / no |
-   | Proposed fix | concrete action |
-   | Fix layer | 1 (Patterns) / 2 (Process) / 3 (Automated) / 4 (Launch) |
+For EACH issue observed (the Reviewer's flags + any near-misses),
+create a row:
 
-3. **For each row, emit patches**:
-   - **Layer 3**: a `.patch` against `cadence.yaml` boundaries or a new
-     lint rule
-   - **Layer 1**: a new file `docs/ADR/NNNN-<slug>.md` + a diff against
-     `docs/PATTERNS.md`
-   - **Layer 2**: a diff against `docs/DEFINITION_OF_DONE.md` or
-     `docs/ROLE_SPECS.md`
-   - **Layer 4**: a diff against `docs/TEAM_LAUNCH_TEMPLATE.md`
+| Field | Value |
+|---|---|
+| What happened | one-line description |
+| Auto-catchable? | yes (what would catch it) / no (judgment call) |
+| Rule existed? | yes (cite ADR / PATTERNS §) / no |
+| Proposed fix | concrete action with file paths |
+| Fix layer | **3** (Automated) > **1** (Patterns) > **2** (Process) > **4** (Launch) |
 
-4. **Present interactively** to the user; for each proposed fix:
-   approve / defer / reject
+Preference order: **higher numbers descending into lower**. If Layer 3
+automation can catch it, automate; only fall to Layer 1 docs when
+automation can't. Layer 4 is the last resort.
 
-5. **On approval**: apply the patch immediately
+If the user says "everything went great" — push back. Find at least
+one improvement. Even great runs reveal something (e.g., "the handoff
+to Tester took longer than it should have because Feature Engineer
+didn't message — flag in TEAM_PROTOCOL.md").
 
-6. **Append to `docs/FRAMEWORK_CHANGELOG.md`** following the Keep a
-   Changelog format with sections: Issues observed, Near-misses,
-   What worked, Lead's decisions
+## Step 3 — Present interactively
 
-7. **Re-run verify** to confirm new gates fire on the original
-   offending diff (regression test for the rule itself)
+For each row, ask the user: **approve / defer / reject**.
 
-## Anti-patterns to flag
+- **Approve** → apply the patch immediately in this same chat session
+- **Defer** → add to `## Open retrospective items` section in
+  `FRAMEWORK_CHANGELOG.md`
+- **Reject** → record the reason in the changelog entry so future
+  retros don't re-propose it
 
-- "Everything went great" — push back; find at least one improvement
-- Proposing a Layer 1 (doc) fix when Layer 3 (automation) would work
-- Rejecting a fix without recording the reason
+## Step 4 — Apply approved patches
 
-See: [docs/self-improvement-loop.md](../../docs/self-improvement-loop.md)
+For each approved fix:
+
+| Layer | Patch shape |
+|---|---|
+| 3 (Automated) | Edit `.cadence/cadence.yaml` boundaries, add lint rule, or extend `tool/check_boundaries.py` |
+| 1 (Patterns) | Create new `docs/ADR/NNNN-<slug>.md` + update `docs/PATTERNS.md` §X to cite it |
+| 2 (Process) | Edit `docs/DEFINITION_OF_DONE.md`, `docs/ROLE_SPECS.md`, or `docs/TEAM_PROTOCOL.md` |
+| 4 (Launch) | Edit `docs/TEAM_LAUNCH_TEMPLATE.md` |
+
+After each Layer 3 patch, re-run `scripts/verify` against the original
+offending diff to confirm the new gate FIRES on the original violation
+(regression test for the rule itself).
+
+## Step 5 — Append to FRAMEWORK_CHANGELOG.md
+
+Use this exact format (Keep a Changelog 1.1.0):
+
+```markdown
+## YYYY-MM-DD — <feature> retrospective
+
+### Issues observed
+
+- **<issue>**: <description>
+  - Auto-catchable? <yes/no — what>
+  - Existing rule? <yes/no — link if yes>
+  - Fix: Layer <N> — <concrete action>
+
+### Near-misses / gaps
+
+- **<gap>**: <description>
+  - Fix: Layer <N> — <action>
+
+### What worked
+
+- <thing to amplify in future runs>
+
+### Lead's decisions
+
+- [x] Approved & landed: <fix> — commit <SHA>
+- [ ] Deferred: <fix> — reason: <why>
+- [ ] Rejected: <fix> — reason: <why>
+```
+
+## Step 6 — Suggest upstreaming
+
+If any approved fix would benefit other Cadence users (not just this
+project), suggest the user open a Framework Finding at:
+
+https://github.com/nik190799/cadence/issues/new?template=framework_finding.md
+
+Provide the link text they can paste.
+
+## Step 7 — Wrap
+
+Tell the user:
+
+```
+Retrospective complete.
+N findings: <approved> approved, <deferred> deferred, <rejected> rejected.
+Framework changelog updated.
+Safe to /clean up the team now.
+```
+
+## Safety rules
+
+- Never skip the retrospective with "nothing to report"
+- Never apply a fix without explicit user approval
+- Every framework change MUST appear in FRAMEWORK_CHANGELOG.md
+- For Layer 3 patches, verify the new rule actually fires before
+  considering it landed

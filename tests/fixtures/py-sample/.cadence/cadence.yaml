@@ -1,0 +1,17 @@
+commands:
+  format: ["true"]
+  lint:   ["true"]
+  test:   ["true"]
+
+boundaries:
+  - where: "src/myapp/features/**"
+    forbidden:
+      - "src/myapp/data/sources/**"
+      - "src/myapp/data/repositories/**"
+    reason: "Features must use narrow providers"
+
+  - where: "src/myapp/data/sources/**"
+    forbidden:
+      - "src/myapp/features/**"
+      - "src/myapp/app/**"
+    reason: "Data sources are leaf-level"

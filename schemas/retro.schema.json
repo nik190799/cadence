@@ -2,21 +2,107 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nik190799.github.io/cadence/schemas/retro.schema.json",
   "title": "Cadence retrospective entry",
-  "description": "Phase 0 stub. Structured JSON form of a single retrospective finding (drafted by the Reviewer subagent in Phase 1).",
+  "description": "Structured JSON form of a single retrospective finding, drafted by the Reviewer subagent and used as the basis for FRAMEWORK_CHANGELOG.md entries.",
   "type": "object",
-  "required": ["id", "ts", "what_happened", "fix_layer"],
+  "required": [
+    "id",
+    "ts",
+    "what_happened",
+    "auto_catchable",
+    "rule_existed",
+    "proposed_fix",
+    "fix_layer"
+  ],
+  "additionalProperties": false,
   "properties": {
-    "id":            { "type": "string", "format": "uuid" },
-    "ts":            { "type": "string", "format": "date-time" },
-    "feature":       { "type": "string", "description": "Name of the feature run this retro covers" },
-    "what_happened": { "type": "string", "description": "One-line description of the observed issue" },
-    "auto_catchable":{ "type": "boolean" },
-    "auto_method":   { "type": "string", "description": "If auto_catchable, what mechanism would catch it" },
-    "rule_existed":  { "type": "boolean" },
-    "rule_reference":{ "type": "string", "description": "ADR-NNNN or PATTERNS.md §X if rule_existed" },
-    "proposed_fix":  { "type": "string" },
-    "fix_layer":     { "type": "integer", "enum": [1, 2, 3, 4] },
-    "decision":      { "type": "string", "enum": ["approved", "deferred", "rejected"] },
-    "decision_note": { "type": "string" }
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Stable identifier for this finding"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the finding was recorded"
+    },
+    "feature": {
+      "type": "string",
+      "description": "Name of the feature run this retrospective covers"
+    },
+    "what_happened": {
+      "type": "string",
+      "minLength": 5,
+      "description": "One-line description of the observed issue"
+    },
+    "auto_catchable": {
+      "type": "boolean",
+      "description": "Whether the issue could be caught mechanically"
+    },
+    "auto_method": {
+      "type": "string",
+      "description": "If auto_catchable, what mechanism would catch it (lint, schema, AST check)"
+    },
+    "rule_existed": {
+      "type": "boolean"
+    },
+    "rule_reference": {
+      "type": "string",
+      "description": "ADR-NNNN or PATTERNS.md §X if rule_existed was true"
+    },
+    "proposed_fix": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Concrete action including file paths"
+    },
+    "fix_layer": {
+      "type": "integer",
+      "enum": [1, 2, 3, 4],
+      "description": "1=Patterns, 2=Process, 3=Automated, 4=Launch"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["approved", "deferred", "rejected"]
+    },
+    "decision_note": {
+      "type": "string",
+      "description": "If deferred or rejected, why"
+    },
+    "landed_in": {
+      "type": "string",
+      "description": "Commit SHA, PR number, or other reference where the approved fix landed"
+    },
+    "near_miss": {
+      "type": "boolean",
+      "default": false,
+      "description": "True if this is a gap that turned out fine, false if a real issue caught"
+    },
+    "tags": {
+      "type": "object",
+      "description": "Cross-references to standards mappings",
+      "additionalProperties": false,
+      "properties": {
+        "ssdf": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^(PO|PS|PW|RV)\\.[0-9]+$" }
+        },
+        "iso25010": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "functional-suitability",
+              "performance-efficiency",
+              "compatibility",
+              "interaction-capability",
+              "reliability",
+              "security",
+              "maintainability",
+              "flexibility",
+              "safety"
+            ]
+          }
+        }
+      }
+    }
   }
 }

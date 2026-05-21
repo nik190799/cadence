@@ -50,10 +50,59 @@ jobs:
   boundary-check-fixtures:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: ${{ false }}  # enabled in Phase 1 when tool/check_boundaries.py lands
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pytest tests/ -v
+      - name: Install deps
+        run: python -m pip install --quiet pyyaml pytest
+      - name: Run boundary-checker tests
+        run: python -m pytest tests/ -v
+
+  validate-cadence-yaml-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet pyyaml jsonschema
+      - name: Validate every recipe against cadence-yaml.schema.json
+        run: |
+          python <<'PY'
+          import json, sys
+          import yaml
+          from pathlib import Path
+          from jsonschema import Draft202012Validator
+
+          schema = json.loads(Path('schemas/cadence-yaml.schema.json').read_text())
+          validator = Draft202012Validator(schema)
+
+          failed = False
+          for p in sorted(Path('recipes').glob('*.yaml')):
+              data = yaml.safe_load(p.read_text())
+              errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
+              if errors:
+                  failed = True
+                  print(f'FAIL {p}')
+                  for e in errors:
+                      print(f'  {list(e.path)}: {e.message}')
+              else:
+                  print(f'OK   {p}')
+
+          # Also validate the fixtures' cadence.yaml files.
+          for p in sorted(Path('tests/fixtures').rglob('cadence.yaml')):
+              data = yaml.safe_load(p.read_text())
+              errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
+              if errors:
+                  failed = True
+                  print(f'FAIL {p}')
+                  for e in errors:
+                      print(f'  {list(e.path)}: {e.message}')
+              else:
+                  print(f'OK   {p}')
+
+          sys.exit(1 if failed else 0)
+          PY
