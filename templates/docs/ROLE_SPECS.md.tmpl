@@ -1,0 +1,38 @@
+# Role specs
+
+> ⚠️ **Stub — Phase 1.** Full role specs arrive in Phase 1.
+
+Four subagent roles. Each owns specific paths from `.cadence/cadence.yaml`.
+
+## Data Engineer
+
+**Owns:** data sources + repositories + narrow providers
+**Forbidden:** importing features/, app/
+**Done:** every method the Feature Engineer needs has a narrow provider
+**Handoff:** `Providers ready for <feature>:`
+
+## Feature Engineer
+
+**Owns:** `features/<name>/`
+**Forbidden:** importing data sources/repositories directly
+**Done:** mutations follow ADRs; error path present; UI async wrapped
+**Handoff:** `Controller for <feature> ready.`
+
+## Tester
+
+**Owns:** `tests/features/<name>/`
+**Forbidden:** importing data sources/repositories in tests
+**Done:** happy + edge + sequence + error + write log per ADR-0006
+**Handoff:** `Tests for <feature> ready:`
+
+## Reviewer
+
+**Owns:** nothing (read-only)
+**Responsibilities:** walk DoD, cite rules by name, drive retrospective
+**Done:** all DoD boxes ticked; framework gaps surfaced
+**Sign-off:** `Reviewer sign-off:`
+
+## Lead (the human)
+
+You. Don't write code. Coordinate, intervene when needed, run the
+post-run retrospective, update the framework.

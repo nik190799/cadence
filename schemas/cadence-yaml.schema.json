@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nik190799.github.io/cadence/schemas/cadence-yaml.schema.json",
+  "title": "Cadence project config (.cadence/cadence.yaml)",
+  "description": "Phase 0 stub. Phase 1 will add full validation constraints.",
+  "type": "object",
+  "required": ["commands"],
+  "properties": {
+    "commands": {
+      "type": "object",
+      "description": "Shell commands the verify pipeline runs.",
+      "properties": {
+        "format": { "$ref": "#/$defs/commandList" },
+        "lint":   { "$ref": "#/$defs/commandList" },
+        "test":   { "$ref": "#/$defs/commandList" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/commandList" }
+    },
+    "boundaries": {
+      "type": "array",
+      "description": "Import-boundary rules enforced by tool/check_boundaries.py.",
+      "items": {
+        "type": "object",
+        "required": ["where", "forbidden", "reason"],
+        "properties": {
+          "where":     { "type": "string", "description": "Glob for files this rule applies to" },
+          "forbidden": { "type": "array",  "items": { "type": "string" } },
+          "reason":    { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commandList": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  }
+}

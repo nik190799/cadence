@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nik190799.github.io/cadence/schemas/retro.schema.json",
+  "title": "Cadence retrospective entry",
+  "description": "Phase 0 stub. Structured JSON form of a single retrospective finding (drafted by the Reviewer subagent in Phase 1).",
+  "type": "object",
+  "required": ["id", "ts", "what_happened", "fix_layer"],
+  "properties": {
+    "id":            { "type": "string", "format": "uuid" },
+    "ts":            { "type": "string", "format": "date-time" },
+    "feature":       { "type": "string", "description": "Name of the feature run this retro covers" },
+    "what_happened": { "type": "string", "description": "One-line description of the observed issue" },
+    "auto_catchable":{ "type": "boolean" },
+    "auto_method":   { "type": "string", "description": "If auto_catchable, what mechanism would catch it" },
+    "rule_existed":  { "type": "boolean" },
+    "rule_reference":{ "type": "string", "description": "ADR-NNNN or PATTERNS.md §X if rule_existed" },
+    "proposed_fix":  { "type": "string" },
+    "fix_layer":     { "type": "integer", "enum": [1, 2, 3, 4] },
+    "decision":      { "type": "string", "enum": ["approved", "deferred", "rejected"] },
+    "decision_note": { "type": "string" }
+  }
+}

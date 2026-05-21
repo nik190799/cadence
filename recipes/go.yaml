@@ -1,0 +1,24 @@
+# Cadence recipe — Go
+# See docs/recipes/go.md for the walkthrough.
+
+commands:
+  format:
+    - "gofmt -l ."
+    - "goimports -l ."
+  lint:
+    - "golangci-lint run"
+  test:
+    - "go test ./..."
+
+boundaries:
+  - where: "internal/features/**"
+    forbidden:
+      - "internal/data/sources/**"
+      - "internal/data/repositories/**"
+    reason: "Features must read via narrow providers"
+
+  - where: "internal/data/sources/**"
+    forbidden:
+      - "internal/features/**"
+      - "internal/app/**"
+    reason: "Data sources are leaf-level"

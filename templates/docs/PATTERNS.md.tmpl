@@ -1,0 +1,58 @@
+# Patterns — canonical reference
+
+> ⚠️ **Stub — Phase 1.** This template will land with the full
+> stack-agnostic patterns reference extracted from the Flutter sandbox
+> and generalized.
+
+## §1 — Layer rules (mechanically enforced)
+
+Your project's layer rules are encoded in `.cadence/cadence.yaml`
+under `boundaries:`. The boundary checker (`tool/check_boundaries.py`)
+enforces them on every `scripts/verify` run.
+
+Default boundaries assumed by Cadence:
+
+- `features/**` may NOT import `data/sources/**` or `data/repositories/**`
+- `data/sources/**` may NOT import `features/**` or `app/**`
+- `app/**` may NOT import `features/**` (cycle avoidance)
+- Models live under `domain/models/**` (NEVER `data/models/**`)
+
+Customize for your project in `cadence.yaml`.
+
+## §2 — Controller shape
+
+Document the project's chosen state-management pattern and which
+controller shape to use when.
+
+## §3 — Narrow function-typed providers
+
+Feature code reads narrow providers, not repositories directly. See
+ADR-NNNN.
+
+## §4 — Mutation pattern
+
+Optimistic-then-write (default per ADR-NNNN), with documented exceptions.
+
+## §5 — Error surface
+
+Three levels: whole-screen `AsyncError`, per-action state field,
+per-row map. See ADR-NNNN.
+
+## §6 — UI async invocation
+
+Wrap fire-and-forget async calls per the project's stack convention
+(`unawaited()` for Dart, `void` cast for TS, etc.).
+
+## §7 — Test requirements
+
+Per ADR-NNNN: happy + edge + sequence + error + write log.
+
+## §8 — Style
+
+Per the project's lint config in `cadence.yaml` `commands.lint`.
+
+## §9 — How patterns evolve
+
+The retrospective protocol (`docs/RETROSPECTIVE_PROTOCOL.md`) is the
+only sanctioned path. Every change to this file lands with a
+corresponding `docs/FRAMEWORK_CHANGELOG.md` entry.

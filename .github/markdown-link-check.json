@@ -1,0 +1,14 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^https://nik190799.github.io"
+    },
+    {
+      "pattern": "^https://github.com/nik190799/cadence"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "10s"
+}

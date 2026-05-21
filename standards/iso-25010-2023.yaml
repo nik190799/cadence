@@ -1,0 +1,54 @@
+# ISO/IEC 25010:2023 (Edition 2) Software Quality Model mapping.
+# Phase 0 stub. Phase 1 will produce per-characteristic coverage rolls.
+# See docs/standards/iso-25010.md.
+
+standard:
+  id: iso-25010
+  version: "2023"
+  url: https://www.iso.org/standard/78176.html
+
+characteristics:
+  - id: functional-suitability
+    sub: [completeness, correctness, appropriateness]
+    cadence_artifacts:
+      - "tests/**"
+      - "docs/DEFINITION_OF_DONE.md"
+
+  - id: performance-efficiency
+    sub: [time-behavior, resource-utilization, capacity]
+    cadence_artifacts: []  # add benchmarks via cadence.yaml in Phase 2
+
+  - id: compatibility
+    sub: [co-existence, interoperability]
+    cadence_artifacts: []
+
+  - id: interaction-capability
+    sub: [operability, learnability, accessibility]
+    cadence_artifacts: []  # accessibility ADRs go here
+
+  - id: reliability
+    sub: [maturity, availability, fault-tolerance, recoverability]
+    cadence_artifacts:
+      - "docs/PATTERNS.md#error-surface"
+      - "docs/ADR/*-error-*.md"
+
+  - id: security
+    sub: [confidentiality, integrity, non-repudiation, accountability, authenticity, resistance]
+    cadence_artifacts:
+      - "docs/PATTERNS.md#security"
+      - "standards/nist-ssdf-1.1.yaml"
+
+  - id: maintainability
+    sub: [modularity, reusability, analyzability, modifiability, testability]
+    cadence_artifacts:
+      - "tool/check_boundaries.py"
+      - "docs/PATTERNS.md"
+      - "docs/ADR/*-narrow-providers*.md"
+
+  - id: flexibility
+    sub: [adaptability, scalability, installability, replaceability]
+    cadence_artifacts: []
+
+  - id: safety  # new in 2023
+    sub: [operational-constraint, risk-identification, fail-safe, hazard-warning, safe-integration]
+    cadence_artifacts: []  # populate for safety-critical projects

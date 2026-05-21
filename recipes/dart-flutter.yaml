@@ -1,0 +1,33 @@
+# Cadence recipe — Dart / Flutter
+# See docs/recipes/dart-flutter.md for the walkthrough.
+
+commands:
+  format:
+    - "dart format --set-exit-if-changed --output none lib/ test/"
+  lint:
+    - "flutter analyze --no-fatal-infos"
+  test:
+    - "flutter test"
+
+boundaries:
+  - where: "lib/features/**"
+    forbidden:
+      - "lib/data/sources/**"
+      - "lib/data/repositories/**"
+    reason: "Features must read via narrow providers in lib/app/providers.dart"
+
+  - where: "lib/data/sources/**"
+    forbidden:
+      - "lib/features/**"
+      - "lib/app/**"
+    reason: "Data sources are leaf-level"
+
+  - where: "lib/app/**"
+    forbidden:
+      - "lib/features/**"
+    reason: "app/ may not import features/ (cycle avoidance per ADR-0007)"
+
+  - where: "**/*"
+    forbidden:
+      - "lib/data/models/**"
+    reason: "Models live in lib/domain/models/ per ADR-0002"

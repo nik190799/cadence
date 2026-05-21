@@ -1,0 +1,28 @@
+# Cadence recipe — TypeScript / Node
+# See docs/recipes/typescript.md for the walkthrough.
+
+commands:
+  format:
+    - "prettier --check ."
+  lint:
+    - "eslint ."
+  test:
+    - "npm test"
+
+boundaries:
+  - where: "src/features/**"
+    forbidden:
+      - "src/data/sources/**"
+      - "src/data/repositories/**"
+    reason: "Features must read via narrow providers in src/app/providers"
+
+  - where: "src/data/sources/**"
+    forbidden:
+      - "src/features/**"
+      - "src/app/**"
+    reason: "Data sources are leaf-level; no upward dependencies"
+
+  - where: "**/*"
+    forbidden:
+      - "src/data/models/**"
+    reason: "Models live in src/domain/models; data/models is forbidden"

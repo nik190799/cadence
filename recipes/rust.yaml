@@ -1,0 +1,23 @@
+# Cadence recipe — Rust
+# See docs/recipes/rust.md for the walkthrough.
+
+commands:
+  format:
+    - "cargo fmt --check"
+  lint:
+    - "cargo clippy -- -D warnings"
+  test:
+    - "cargo test"
+
+boundaries:
+  - where: "src/features/**"
+    forbidden:
+      - "src/data/sources/**"
+      - "src/data/repositories/**"
+    reason: "Features must read via narrow providers"
+
+  - where: "src/data/sources/**"
+    forbidden:
+      - "src/features/**"
+      - "src/app/**"
+    reason: "Data sources are leaf-level"

@@ -1,0 +1,55 @@
+# NIST SP 800-218 SSDF v1.1 mapping — Phase 0 stub.
+# Full mapping (with cited artifact paths and verify-hook bindings)
+# lands in Phase 1.
+# See docs/standards/nist-ssdf.md for the framework's positioning.
+
+standard:
+  id: nist-ssdf
+  version: "1.1"
+  url: https://csrc.nist.gov/publications/detail/sp/800-218/final
+
+practices:
+  # Prepare the Organization
+  - id: PO.1
+    description: Define security requirements for software development
+    cadence_artifacts:
+      - "docs/PATTERNS.md#security"
+      - "docs/ADR/*-security-*.md"
+
+  - id: PO.4
+    description: Implement supporting toolchains
+    cadence_artifacts:
+      - ".cadence/cadence.yaml"
+      - "scripts/verify.sh"
+      - "scripts/verify.ps1"
+
+  # Produce Well-Secured Software
+  - id: PW.4
+    description: Reuse existing well-secured software when feasible
+    cadence_artifacts:
+      - "docs/ADR/*-dependency-*.md"
+
+  - id: PW.7
+    description: Review and analyze human-readable code
+    cadence_artifacts:
+      - "docs/DEFINITION_OF_DONE.md"
+      - "agents/cadence-reviewer.md"
+
+  - id: PW.8
+    description: Test executable code to identify vulnerabilities
+    cadence_artifacts:
+      - "tests/**"
+      - ".cadence/cadence.yaml#commands.test"
+
+  # Respond to Vulnerabilities
+  - id: RV.1
+    description: Identify and confirm vulnerabilities on an ongoing basis
+    cadence_artifacts:
+      - ".github/dependabot.yml"
+      - ".cadence/cadence.yaml#commands.lint"
+
+  - id: RV.2
+    description: Assess, prioritize, and remediate vulnerabilities
+    cadence_artifacts:
+      - "docs/RETROSPECTIVE_PROTOCOL.md"
+      - "docs/FRAMEWORK_CHANGELOG.md"

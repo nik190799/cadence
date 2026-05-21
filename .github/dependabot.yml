@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+
+  # Python deps will be added in Phase 1 when tool/check_boundaries.py
+  # and its test fixtures pick up a requirements.txt or pyproject.toml.

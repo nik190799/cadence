@@ -1,0 +1,23 @@
+title: Cadence
+description: A stack-agnostic, self-improving AI development framework as a Claude Code plugin.
+url: https://nik190799.github.io
+baseurl: /cadence
+theme: jekyll-theme-minimal
+markdown: kramdown
+highlighter: rouge
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+relative_links:
+  enabled: true
+  collections: true
+include:
+  - CHANGELOG.md
+  - CONTRIBUTING.md
+  - CODE_OF_CONDUCT.md
+  - SECURITY.md
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

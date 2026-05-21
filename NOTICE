@@ -1,0 +1,16 @@
+Cadence
+Copyright 2026 Nikhil Kadalge
+
+This product includes software developed by the Cadence contributors.
+
+Pattern and protocol concepts are inspired by:
+- Michael Nygard's Architecture Decision Records
+- NIST Secure Software Development Framework (SP 800-218)
+- ISO/IEC 25010 Software Quality Model
+- The Lean / Toyota kaizen retrospective tradition
+- Google SRE blameless postmortem practice
+
+The reference Flutter case study at
+https://github.com/nik190799/agent_teams_sandbox (separate repository)
+is derivative of patterns established in The Atelier project, used here
+with the author's permission.

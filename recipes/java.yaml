@@ -1,0 +1,25 @@
+# Cadence recipe — Java
+# See docs/recipes/java.md for the walkthrough.
+# Replace com/example with your actual package root.
+
+commands:
+  format:
+    - "mvn -q spotless:check"
+  lint:
+    - "mvn -q -DskipTests compile"
+    - "mvn -q checkstyle:check"
+  test:
+    - "mvn -q test"
+
+boundaries:
+  - where: "src/main/java/com/example/features/**"
+    forbidden:
+      - "src/main/java/com/example/data/sources/**"
+      - "src/main/java/com/example/data/repositories/**"
+    reason: "Features must read via narrow providers"
+
+  - where: "src/main/java/com/example/data/sources/**"
+    forbidden:
+      - "src/main/java/com/example/features/**"
+      - "src/main/java/com/example/app/**"
+    reason: "Data sources are leaf-level"

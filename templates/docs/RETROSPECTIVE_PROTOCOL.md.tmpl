@@ -1,0 +1,67 @@
+# Retrospective protocol
+
+> ⚠️ **Stub — Phase 1.**
+
+## When
+
+After Reviewer signs off, before the Lead runs `Clean up the team`.
+
+## Who
+
+- Reviewer drafts findings
+- Lead approves / defers / rejects
+- Other teammates silent observers
+
+## The mechanical pass
+
+For each observed issue:
+
+| Field | Example |
+|---|---|
+| What happened | "Feature engineer used write-then-reread for list mutations" |
+| Auto-catchable? | "No — judgment call" |
+| Rule existed? | "No" |
+| Proposed fix | "Write ADR-NNNN + update PATTERNS.md §4" |
+| Fix layer | "Layer 1 (Patterns)" |
+
+## The four valid fix layers
+
+Preference order: higher numbers descending into lower.
+
+| Layer | When | Action |
+|---|---|---|
+| **3 Automated** | Mechanically detectable | Add lint, schema, or boundary rule |
+| **1 Patterns** | Judgment call with defensible answer | Write ADR + update PATTERNS.md |
+| **2 Process** | Coordination issue, not code | Update DoD / ROLE_SPECS / TEAM_PROTOCOL |
+| **4 Launch** | Launch-prompt ambiguity | Update TEAM_LAUNCH_TEMPLATE |
+
+## Output
+
+Append to `docs/FRAMEWORK_CHANGELOG.md`:
+
+```markdown
+## YYYY-MM-DD — <feature> retrospective
+
+### Issues observed
+- **<issue>**: <description>
+  - Auto-catchable? <yes/no>
+  - Existing rule? <yes/no>
+  - Fix: <layer> — <action>
+
+### Near-misses / gaps
+- ...
+
+### What worked
+- ...
+
+### Lead's decisions
+- [x] Approved & landed: <fix>
+- [ ] Deferred: <fix> — reason: <...>
+```
+
+## Anti-patterns
+
+- "Everything went great" → false; find at least one improvement
+- Proposing Layer 1 when Layer 3 would work
+- Rejecting without recording reason
+- Lead implementing fixes silently (every change appears in changelog)

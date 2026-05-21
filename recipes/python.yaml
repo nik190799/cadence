@@ -1,0 +1,30 @@
+# Cadence recipe — Python
+# See docs/recipes/python.md for the walkthrough.
+# Replace {{pkg}} with your top-level package name.
+
+commands:
+  format:
+    - "ruff format --check ."
+  lint:
+    - "ruff check ."
+    - "mypy ."
+  test:
+    - "pytest"
+
+boundaries:
+  - where: "src/{{pkg}}/features/**"
+    forbidden:
+      - "src/{{pkg}}/data/sources/**"
+      - "src/{{pkg}}/data/repositories/**"
+    reason: "Features must read via narrow providers"
+
+  - where: "src/{{pkg}}/data/sources/**"
+    forbidden:
+      - "src/{{pkg}}/features/**"
+      - "src/{{pkg}}/app/**"
+    reason: "Data sources are leaf-level"
+
+  - where: "**/*"
+    forbidden:
+      - "src/{{pkg}}/data/models/**"
+    reason: "Models live in src/{{pkg}}/domain/models"

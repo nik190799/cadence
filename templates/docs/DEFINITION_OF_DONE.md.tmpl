@@ -1,0 +1,62 @@
+# Definition of Done
+
+> ⚠️ **Stub — Phase 1.** Full DoD checklist arrives in Phase 1.
+
+A feature, refactor, or bug fix is **done** when every box below is
+ticked. The Reviewer subagent runs this checklist before signing off.
+
+Lines marked **(auto)** are enforced by `scripts/verify`; lines marked
+**(manual)** require the Reviewer's eye.
+
+## Mechanical (auto-enforced)
+
+- [ ] **(auto)** Format check passes (`cadence.yaml` `commands.format`)
+- [ ] **(auto)** Lint passes (`cadence.yaml` `commands.lint`)
+- [ ] **(auto)** Boundary check passes (`tool/check_boundaries.py`)
+- [ ] **(auto)** Tests pass (`cadence.yaml` `commands.test`)
+- [ ] **(auto)** `scripts/verify` exits zero
+
+## Architecture (manual — Reviewer cites the rule)
+
+- [ ] Files placed per `docs/PATTERNS.md` §1 layer rules
+- [ ] Controller uses the right shape per `docs/PATTERNS.md` §2
+- [ ] No direct repository/source imports from features
+- [ ] Every new service method has a corresponding narrow provider
+
+## Patterns (manual — Reviewer cites the ADR)
+
+- [ ] Mutations follow the optimistic-then-write ADR (or document the
+      exception)
+- [ ] Models live under `domain/models/` per ADR
+- [ ] Every mutation has an error path per the error-surface ADR
+- [ ] UI fire-and-forget calls wrapped per the UI-async ADR
+
+## Tests (manual — Reviewer counts)
+
+- [ ] One happy-path test per public controller method
+- [ ] At least one edge case per public method
+- [ ] One sequence test (≥3 mutations in order)
+- [ ] One error test if the method has an error path
+- [ ] Every mutation test asserts both state AND the write log
+
+## Documentation
+
+- [ ] New judgment calls get a new ADR
+- [ ] New patterns are added to `PATTERNS.md`
+- [ ] New gates are added to `cadence.yaml` or `analysis_options`
+- [ ] `FRAMEWORK_CHANGELOG.md` has a new entry for any of the above
+
+## Retrospective
+
+- [ ] If the Reviewer caught any issue that *should* have been
+      auto-enforced, a follow-up item is filed (or fixed in this PR)
+- [ ] If a teammate had to make a judgment call not covered by ADRs,
+      it's surfaced for the retrospective
+
+## Sign-off
+
+```
+Reviewer sign-off: all DoD boxes ticked.
+Framework gaps: <list, or "none">
+Recommended retrospective items: <list, or "none">
+```

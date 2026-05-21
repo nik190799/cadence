@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate plugin.json
+        run: |
+          python -c "import json, sys; json.load(open('.claude-plugin/plugin.json')); print('plugin.json valid JSON')"
+
+      - name: Validate JSON schemas (when present)
+        run: |
+          if ls schemas/*.schema.json 1> /dev/null 2>&1; then
+            for f in schemas/*.schema.json; do
+              python -c "import json, sys; json.load(open('$f')); print('$f valid')"
+            done
+          else
+            echo "No schemas yet (Phase 1 work)."
+          fi
+
+      - name: Markdown link check
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: yes
+          use-verbose-mode: yes
+          config-file: .github/markdown-link-check.json
+        continue-on-error: true
+
+      - name: Check for required top-level files
+        run: |
+          for f in README.md LICENSE NOTICE CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md; do
+            test -f "$f" || (echo "Missing required file: $f" && exit 1)
+          done
+          echo "All required top-level files present."
+
+  boundary-check-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ false }}  # enabled in Phase 1 when tool/check_boundaries.py lands
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pytest tests/ -v

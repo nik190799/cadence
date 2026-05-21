@@ -1,0 +1,21 @@
+name: cadence
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Replace with stack-specific setup (Node/Python/Go/etc.)
+      # The `/cadence-init` skill prefills this based on your stack.
+      - name: Setup runtime
+        run: echo "setup goes here"
+
+      - name: Run Cadence verify
+        run: bash scripts/verify.sh
