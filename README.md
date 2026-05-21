@@ -8,7 +8,7 @@ your team uses it.
 Aligned with NIST SSDF v1.1, ISO/IEC 25010:2023, ADR (Nygard),
 Conventional Commits 1.0, and Semantic Versioning 2.0.
 
-> Status: **v0.1.0 — bootstrap.** Repo structure and docs are in place;
+> Status: **v0.0.1 — bootstrap.** Repo structure and docs are in place;
 > plugin internals (skills, agents, templates) are stubbed pending
 > Phase 1 implementation. See [CHANGELOG.md](CHANGELOG.md).
 
