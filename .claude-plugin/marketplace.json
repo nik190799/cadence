@@ -15,12 +15,7 @@
         "url": "https://github.com/nik190799"
       },
       "category": "development",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/nik190799/cadence.git",
-        "path": ".",
-        "ref": "main"
-      },
+      "source": "./",
       "homepage": "https://nik190799.github.io/cadence",
       "license": "Apache-2.0",
       "keywords": [
