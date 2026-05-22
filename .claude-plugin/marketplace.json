@@ -16,8 +16,9 @@
       },
       "category": "development",
       "source": {
-        "source": "github",
-        "url": "https://github.com/nik190799/cadence",
+        "source": "git-subdir",
+        "url": "https://github.com/nik190799/cadence.git",
+        "path": ".",
         "ref": "main"
       },
       "homepage": "https://nik190799.github.io/cadence",
