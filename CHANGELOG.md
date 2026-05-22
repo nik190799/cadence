@@ -6,11 +6,38 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
-### Planned for v0.2.0
-- Marketplace submission PR against `anthropics/claude-plugins-official`
+### Planned for v0.3.0
 - Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
   trigger when basic line-pattern matching produces false positives
 - npx CLI for non-Claude-Code users (Codex, Gemini CLI, Cline)
+
+## [0.2.0] — 2026-05-21
+
+### Changed (BREAKING for upstream marketplaces)
+- **Repo restructured: plugin internals moved into `plugins/cadence/`.**
+  This matches the convention every external plugin in
+  `anthropics/claude-plugins-official` already follows (42Crunch,
+  Adobe, etc.) and is required for the official marketplace
+  submission. The self-hosted marketplace.json now sources from
+  `./plugins/cadence`.
+- Why: when a marketplace entry referenced this repo with `path: "."`,
+  Claude Code's installer wrote a sparse-checkout pattern
+  (`/*` + `!/*/`) that excluded every subdirectory — skills, agents,
+  and templates were silently dropped from the install. Putting the
+  plugin in a subdir avoids the bug entirely.
+- Migration: users who installed v0.1.0 via the self-hosted marketplace
+  should run `/plugin update cadence@cadence` to pick up the new
+  layout. The plugin manifest version bump (0.1.0 → 0.2.0) ensures
+  Claude Code refetches.
+
+### Added
+- `.claude-plugin/marketplace.json` at repo root pointing at
+  `./plugins/cadence` (the marketplace catalog stays at root; the
+  plugin itself lives in the subdir).
+
+### Fixed
+- Tests and CI workflow updated to reference the new paths under
+  `plugins/cadence/`.
 
 ## [0.1.0] — 2026-05-21
 

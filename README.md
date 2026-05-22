@@ -8,11 +8,12 @@ your team uses it.
 Aligned with NIST SSDF v1.1, ISO/IEC 25010:2023, ADR (Nygard),
 Conventional Commits 1.0, and Semantic Versioning 2.0.
 
-> Status: **v0.1.0 — Phase 1 complete.** All 9 skills, 4 subagents,
-> full template content, the language-agnostic boundary checker, the
-> verify orchestrator, and the NIST SSDF + ISO 25010 standards
-> mappings are in place. Marketplace submission tracked under
-> `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+> Status: **v0.2.0.** Plugin internals live under `plugins/cadence/`
+> (matches Anthropic's convention for external plugins). 9 skills, 4
+> subagents, language-agnostic boundary checker, verify orchestrator,
+> NIST SSDF + ISO 25010 standards mappings. Self-hosted marketplace
+> installable today; official-marketplace submission in flight. See
+> [CHANGELOG.md](CHANGELOG.md).
 
 ## Installation
 

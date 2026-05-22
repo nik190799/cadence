@@ -20,17 +20,17 @@ jobs:
 
       - name: Validate plugin.json
         run: |
-          python -c "import json, sys; json.load(open('.claude-plugin/plugin.json')); print('plugin.json valid JSON')"
+          python -c "import json, sys; json.load(open('plugins/cadence/.claude-plugin/plugin.json')); print('plugin.json valid JSON')"
 
-      - name: Validate JSON schemas (when present)
+      - name: Validate marketplace.json
         run: |
-          if ls schemas/*.schema.json 1> /dev/null 2>&1; then
-            for f in schemas/*.schema.json; do
-              python -c "import json, sys; json.load(open('$f')); print('$f valid')"
-            done
-          else
-            echo "No schemas yet (Phase 1 work)."
-          fi
+          python -c "import json, sys; json.load(open('.claude-plugin/marketplace.json')); print('marketplace.json valid JSON')"
+
+      - name: Validate JSON schemas
+        run: |
+          for f in plugins/cadence/schemas/*.schema.json; do
+            python -c "import json, sys; json.load(open('$f')); print('$f valid')"
+          done
 
       - name: Markdown link check
         uses: gaurav-nelson/github-action-markdown-link-check@v1
@@ -77,11 +77,11 @@ jobs:
           from pathlib import Path
           from jsonschema import Draft202012Validator
 
-          schema = json.loads(Path('schemas/cadence-yaml.schema.json').read_text())
+          schema = json.loads(Path('plugins/cadence/schemas/cadence-yaml.schema.json').read_text())
           validator = Draft202012Validator(schema)
 
           failed = False
-          for p in sorted(Path('recipes').glob('*.yaml')):
+          for p in sorted(Path('plugins/cadence/recipes').glob('*.yaml')):
               data = yaml.safe_load(p.read_text())
               errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
               if errors:

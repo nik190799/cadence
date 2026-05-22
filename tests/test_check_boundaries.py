@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CHECKER_PATH = REPO_ROOT / 'templates' / 'tool' / 'check_boundaries.py'
+CHECKER_PATH = REPO_ROOT / 'plugins' / 'cadence' / 'templates' / 'tool' / 'check_boundaries.py'
 FIXTURES_DIR = REPO_ROOT / 'tests' / 'fixtures'
 
 
