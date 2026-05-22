@@ -3,137 +3,95 @@ layout: default
 title: Marketplace submission
 ---
 
-# Submitting Cadence to the Claude Code marketplace
+# Submitting Cadence to a Claude Code marketplace
 
-The Anthropic-curated marketplace lives at
-[anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official).
-Adding Cadence is a manual pull request — there's no automated
-submission form.
+> ⚠️ **Corrected in v0.2.0.** A previous version of this doc described
+> opening a PR against `anthropics/claude-plugins-official` — that
+> repo accepts contributions from Anthropic team members only, and
+> the auto-bot closes external PRs immediately. The correct path for
+> third parties is a web form that lands plugins in the *community*
+> marketplace.
 
-This page documents the exact steps so the submission is
-reproducible. It is **not** auto-executed by the plugin (third-party
-PRs against external repos should always be a deliberate human
-action).
+There are two Anthropic-curated marketplaces:
 
-## Step 1 — Fork the marketplace repo
+| Marketplace | Who can add plugins | Install path |
+|---|---|---|
+| **`anthropics/claude-plugins-official`** | Anthropic team members only (no third-party submissions) | `/plugin install <name>` after enabling |
+| **`anthropics/claude-plugins-community`** | Third parties via web form | `/plugin install <name>@claude-community` |
 
-```bash
-gh repo fork anthropics/claude-plugins-official --clone --remote
-cd claude-plugins-official
+The path below is for the **community marketplace** — that's where
+Cadence belongs.
+
+## Pre-submission checklist
+
+Before opening the form, confirm:
+
+- [ ] Plugin is in a **public Git repo** with a current release tag
+- [ ] `claude plugin validate <plugin-root>` passes (we run the same
+      check)
+- [ ] `README.md` includes installation and usage instructions
+- [ ] License file present and matches the manifest's `license:` field
+- [ ] You have a recent commit SHA on hand (review pipeline pins to it)
+
+For Cadence specifically, these are all green as of `v0.2.0` (sha
+`4ff09907`) — the canonical reference URL to paste into the form is
+`https://github.com/nik190799/cadence`.
+
+## Submit
+
+Open one of these (both route to the same review queue):
+
+- [claude.ai/settings/plugins/submit](https://claude.ai/settings/plugins/submit)
+- [platform.claude.com/plugins/submit](https://platform.claude.com/plugins/submit)
+
+Fill in:
+
+| Field | Value (for Cadence) |
+|---|---|
+| Plugin name | `cadence` |
+| Description | Copy from `.claude-plugin/marketplace.json` plugins[0].description |
+| Repository URL | `https://github.com/nik190799/cadence` |
+| Plugin path (if asked) | `plugins/cadence` |
+| Latest release / ref | `v0.2.0` |
+| Latest commit SHA | `4ff099073c960aee4573a9b18f926156d95640ef` |
+| License | `Apache-2.0` |
+| Author | `Nikhil Kadalge` |
+| Category | `development` |
+
+## What happens next
+
+1. Anthropic runs automated safety screening + revalidates the plugin
+2. If approved, an entry lands in
+   [`anthropics/claude-plugins-community`'s `marketplace.json`](https://github.com/anthropics/claude-plugins-community/blob/main/.claude-plugin/marketplace.json)
+3. CI auto-bumps the pinned SHA as new commits land on the referenced
+   branch
+4. Catalog syncs nightly — your plugin becomes installable via:
+
+   ```
+   /plugin marketplace add anthropics/claude-plugins-community
+   /plugin install cadence@claude-community
+   ```
+
+No SLA on review timing is published in the docs. Plan for "days, not
+hours."
+
+## Until then — self-hosted marketplace still works
+
+Cadence's own repo ships its `.claude-plugin/marketplace.json`, so any
+user can install today with no waiting:
+
+```
+/plugin marketplace add nik190799/cadence
+/plugin install cadence@cadence
 ```
 
-## Step 2 — Add Cadence to `marketplace.json`
+When the community-marketplace entry goes live, update the README to
+prefer the community-marketplace install command (one fewer step for
+users).
 
-Open `.claude-plugin/marketplace.json` (location is at the root of
-the marketplace repo; if the schema has moved, follow the repo's
-README). Add a new entry:
+## What you cannot do automatically
 
-```json
-{
-  "name": "cadence",
-  "display_name": "Cadence",
-  "description": "Stack-agnostic, self-improving AI development framework — four layers + retrospective loop. Aligned with NIST SSDF v1.1, ISO 25010:2023, ADR.",
-  "version": "0.1.0",
-  "author": {
-    "name": "Nikhil Kadalge",
-    "url": "https://github.com/nik190799"
-  },
-  "homepage": "https://nik190799.github.io/cadence",
-  "repository": "https://github.com/nik190799/cadence",
-  "license": "Apache-2.0",
-  "keywords": [
-    "claude-code-plugin",
-    "ai-development",
-    "agent-framework",
-    "software-architecture",
-    "adr",
-    "nist-ssdf",
-    "iso-25010",
-    "self-improving"
-  ],
-  "category": "engineering"
-}
-```
-
-Sort the entry alphabetically with the others in `marketplace.json`.
-
-## Step 3 — Commit and open the PR
-
-```bash
-git checkout -b add-cadence-plugin
-git add .claude-plugin/marketplace.json
-git commit -m "feat: add Cadence plugin to marketplace"
-git push -u origin add-cadence-plugin
-gh pr create --base main --title "feat: add Cadence plugin" --body "$(cat <<'EOF'
-## Summary
-
-Adds [Cadence](https://github.com/nik190799/cadence) v0.1.0 to the
-official marketplace.
-
-Cadence is a stack-agnostic, self-improving AI development framework
-packaged as a Claude Code plugin. It ships four layers (Patterns,
-Process, Automated gates, Launch) plus a retrospective protocol that
-lets the framework grow as users apply it on real projects.
-
-## What it ships
-
-- 9 skills (6 slash + 3 auto-invoked)
-- 4 subagents (data engineer, feature engineer, tester, reviewer)
-- Language-agnostic import-boundary checker (`tool/check_boundaries.py`)
-- Verify orchestrator (`scripts/verify.{sh,ps1}`)
-- 6 stack recipes (TypeScript, Python, Go, Rust, Java, Dart/Flutter)
-- Full NIST SSDF v1.1 and ISO/IEC 25010:2023 standards mappings
-- 14 passing tests + cross-stack fixtures
-
-## Test plan
-
-- [x] `claude plugins add nik190799/cadence` installs successfully
-      from upstream GitHub
-- [x] `/cadence-init` scaffolds correctly in TypeScript and Python
-      sample repos
-- [x] `/cadence-verify` runs the full pipeline
-- [x] `/cadence-launch` renders the launch template
-- [x] `/cadence-retro` drives the structured retrospective
-- [x] All CI checks green on the source repo
-
-## License
-
-Apache 2.0 — patent grant for enterprise legal review.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
-
-## Step 4 — Respond to maintainer review
-
-- If the maintainers request changes (schema fields, naming, etc.),
-  apply them to your fork and push to the same branch — the PR
-  updates automatically.
-- After merge, install from the official marketplace verbatim:
-  `claude plugins add cadence` (no `@nik190799/` prefix needed once
-  it's in the curated marketplace).
-
-## Step 5 — Update the Cadence repo
-
-After the marketplace PR merges:
-
-- Update the README installation section to show the simpler
-  `claude plugins add cadence` form
-- Bump `plugin.json` patch version if a follow-up release ships
-  alongside the marketplace listing
-- Add the marketplace acceptance to `CHANGELOG.md`
-
-## Why this is a manual step
-
-Cadence opens an external PR against an Anthropic-maintained repo.
-Auto-submitting from a plugin would:
-
-- Be presumptuous about Anthropic's review process and timing
-- Risk spam if the plugin is installed widely and each install
-  triggers a submission
-- Make the human Cadence maintainer (you) not the actual author of
-  the PR
-
-The submission is a one-time deliberate action by you, not the
-plugin's automation.
+The submission form is a web UI on claude.ai that requires you to be
+logged into your Anthropic account. There is no API; submission is
+deliberately a human action by the plugin owner. The Cadence repo's
+automation cannot submit itself — that's by design.

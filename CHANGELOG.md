@@ -6,6 +6,14 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Docs
+- `docs/marketplace-submission.md` rewritten: the previous version
+  described opening a PR against `anthropics/claude-plugins-official`,
+  which auto-closes external PRs (team-only repo). Correct path is the
+  web form at https://claude.ai/settings/plugins/submit — third-party
+  plugins land in `anthropics/claude-plugins-community` instead.
+  Discovered when our PR #1968 was auto-closed.
+
 ### Planned for v0.3.0
 - Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
   trigger when basic line-pattern matching produces false positives
