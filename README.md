@@ -16,11 +16,48 @@ Conventional Commits 1.0, and Semantic Versioning 2.0.
 
 ## Installation
 
-```bash
-# Claude Code
-claude plugins add nik190799/cadence
-# or, from inside Claude Code
-/plugin install nik190799/cadence
+Cadence ships its own Claude Code marketplace. Two-step install from
+inside any Claude Code session:
+
+```
+/plugin marketplace add nik190799/cadence
+/plugin install cadence@cadence
+```
+
+The first command registers this repo as a marketplace; the second
+installs the `cadence` plugin from it. Once installed, the
+`/cadence-*` commands are available everywhere.
+
+To check the install:
+
+```
+/plugin list
+```
+
+You should see `cadence@cadence  v0.1.0`. From there, jump to the
+[quickstart](docs/quickstart.md) — five minutes to your first
+retrospective.
+
+### Updating
+
+```
+/plugin update cadence@cadence
+```
+
+### Uninstalling
+
+```
+/plugin uninstall cadence@cadence
+/plugin marketplace remove cadence
+```
+
+### Local install (for contributors)
+
+If you've cloned the repo and want to test changes locally:
+
+```
+/plugin marketplace add ./path/to/cadence
+/plugin install cadence@cadence
 ```
 
 ## Commands

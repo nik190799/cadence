@@ -15,15 +15,25 @@ itself on your repo.
 
 ## 1. Install the plugin
 
-```bash
-claude plugins add nik190799/cadence
-```
-
-Or from inside Claude Code:
+Inside any Claude Code session:
 
 ```
-/plugin install nik190799/cadence
+/plugin marketplace add nik190799/cadence
+/plugin install cadence@cadence
 ```
+
+The first command registers the Cadence repo as a plugin marketplace.
+The second installs the `cadence` plugin from it. You only need to do
+this once per workstation; the plugin is then available in every
+session.
+
+Verify:
+
+```
+/plugin list
+```
+
+You should see `cadence@cadence  v0.1.0`.
 
 ## 2. Initialize the framework in your project
 
