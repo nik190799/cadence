@@ -6,6 +6,13 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Planned for v0.3.0
+- Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
+  trigger when basic line-pattern matching produces false positives
+- npx CLI for non-Claude-Code users (Codex, Gemini CLI, Cline)
+
+## [0.2.1] — 2026-05-27
+
 ### Docs
 - `docs/marketplace-submission.md` rewritten: the previous version
   described opening a PR against `anthropics/claude-plugins-official`,
@@ -13,11 +20,16 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   web form at https://claude.ai/settings/plugins/submit — third-party
   plugins land in `anthropics/claude-plugins-community` instead.
   Discovered when our PR #1968 was auto-closed.
+- Submission doc refreshed for the v0.2.1 cut: pins this tag's commit
+  SHA so reviewers pulling from the form get a snapshot that includes
+  the corrected submission path.
 
-### Planned for v0.3.0
-- Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
-  trigger when basic line-pattern matching produces false positives
-- npx CLI for non-Claude-Code users (Codex, Gemini CLI, Cline)
+### Changed
+- Plugin manifest + marketplace.json version bump 0.2.0 → 0.2.1. No
+  functional changes to skills, agents, templates, schemas, or the
+  verify pipeline — this release exists to cut a tag that bundles the
+  corrected marketplace-submission doc, so the official-marketplace
+  submission can reference a clean tagged ref.
 
 ## [0.2.0] — 2026-05-21
 

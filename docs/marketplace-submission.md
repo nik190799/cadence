@@ -33,9 +33,11 @@ Before opening the form, confirm:
 - [ ] License file present and matches the manifest's `license:` field
 - [ ] You have a recent commit SHA on hand (review pipeline pins to it)
 
-For Cadence specifically, these are all green as of `v0.2.0` (sha
-`4ff09907`) — the canonical reference URL to paste into the form is
-`https://github.com/nik190799/cadence`.
+For Cadence specifically, these are all green as of `v0.2.1` — the
+canonical reference URL to paste into the form is
+`https://github.com/nik190799/cadence`. The exact commit SHA the tag
+points to is printed by `git rev-list -n 1 v0.2.1` after the tag is
+pushed.
 
 ## Submit
 
@@ -52,8 +54,8 @@ Fill in:
 | Description | Copy from `.claude-plugin/marketplace.json` plugins[0].description |
 | Repository URL | `https://github.com/nik190799/cadence` |
 | Plugin path (if asked) | `plugins/cadence` |
-| Latest release / ref | `v0.2.0` |
-| Latest commit SHA | `4ff099073c960aee4573a9b18f926156d95640ef` |
+| Latest release / ref | `v0.2.1` |
+| Latest commit SHA | run `git rev-list -n 1 v0.2.1` |
 | License | `Apache-2.0` |
 | Author | `Nikhil Kadalge` |
 | Category | `development` |

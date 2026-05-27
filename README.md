@@ -8,7 +8,7 @@ your team uses it.
 Aligned with NIST SSDF v1.1, ISO/IEC 25010:2023, ADR (Nygard),
 Conventional Commits 1.0, and Semantic Versioning 2.0.
 
-> Status: **v0.2.0.** Plugin internals live under `plugins/cadence/`
+> Status: **v0.2.1.** Plugin internals live under `plugins/cadence/`
 > (matches Anthropic's convention for external plugins). 9 skills, 4
 > subagents, language-agnostic boundary checker, verify orchestrator,
 > NIST SSDF + ISO 25010 standards mappings. Self-hosted marketplace
@@ -35,7 +35,7 @@ To check the install:
 /plugin list
 ```
 
-You should see `cadence@cadence  v0.1.0`. From there, jump to the
+You should see `cadence@cadence  v0.2.1`. From there, jump to the
 [quickstart](docs/quickstart.md) — five minutes to your first
 retrospective.
 
