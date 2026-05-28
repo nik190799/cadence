@@ -68,12 +68,39 @@ Append to `docs/FRAMEWORK_CHANGELOG.md`:
 - Lead applying changes silently — every framework change appears in
   the changelog with a triggering retrospective
 
-## Verifying Layer 3 fixes
+## Verifying Layer 3 fixes — the emitter is mandatory
 
-After adding a new automated rule (lint, boundary, etc.), confirm it
-actually fires on the original violation that triggered it. A rule
-that doesn't fire on its own trigger case is worse than no rule —
-it's misleading.
+Layer 3 fixes do not become "landed" by hand-editing
+`.cadence/cadence.yaml`. They go through `tool/emit_rule.py`, which:
+
+1. Builds a regression fixture under `tests/fixtures/retro/<id>/`
+   containing the exact offending import
+2. Writes a fixture cadence.yaml with the proposed rule
+3. Runs the checker against the fixture
+4. **Refuses to mark the finding as landed unless the rule fires on
+   the sample**
+
+A rule that doesn't catch its own trigger case is worse than no rule
+— the emitter enforces this at the code level.
+
+Required JSON block when `auto_method: "boundary-rule"`:
+
+```json
+"violation_sample": {
+  "kind": "boundary-rule",
+  "language": "ts|py|go|rs|dart|java|kt|swift",
+  "where": "<glob>",
+  "import_line": "<exact offending import>",
+  "forbidden_pattern": "<glob>",
+  "reason": "<why>"
+}
+```
+
+Run: `python tool/emit_rule.py --input finding.json --apply`
+
+Exit 0 = land it. Exit 1 = rule doesn't fire, revise. Exit 2 = bad input.
+
+Full protocol lives in [cadence-retro](../cadence-retro/SKILL.md) §4a.
 
 ## Upstreaming a finding
 

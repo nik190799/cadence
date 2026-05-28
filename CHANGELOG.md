@@ -6,10 +6,79 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
-### Planned for v0.3.0
+### Planned for v0.3.0 (still pending)
 - Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
   trigger when basic line-pattern matching produces false positives
 - npx CLI for non-Claude-Code users (Codex, Gemini CLI, Cline)
+- Additional emitter kinds for `tool/emit_rule.py`: lint-rule and
+  schema-rule (currently only `boundary-rule` is wired)
+
+## [0.3.0-rc.1] — 2026-05-27
+
+### Added — retrospective loop closes at the code level
+
+- **`plugins/cadence/templates/tool/emit_rule.py`** — Layer-3 rule
+  emitter. Reads a single retrospective finding (JSON matching
+  `retro.schema.json`) on stdin or `--input`. For findings with
+  `fix_layer: 3` and `auto_method: "boundary-rule"`, the helper:
+  1. Materializes a regression fixture at
+     `tests/fixtures/retro/<short-id>/` containing the exact offending
+     import
+  2. Writes a fixture `.cadence/cadence.yaml` with the proposed new
+     boundary rule
+  3. Runs the existing checker against the fixture
+  4. **Refuses to record the finding as landed unless the new rule
+     fires on the offending sample.** Exit code 1 means the rule is
+     broken — a rule that doesn't catch its own trigger case is worse
+     than no rule.
+  5. With `--apply`, also appends the rule to the project's root
+     `.cadence/cadence.yaml` (idempotent — duplicate rules are
+     detected and skipped).
+- **`tests/test_emit_rule.py`** — 13 tests covering the happy path,
+  per-language samples (ts, py, go, rs, dart), the safety case where
+  the proposed rule doesn't fire, schema rejection paths, `--apply`
+  idempotency, and no-clobber on existing fixtures. This is the
+  literal proof of the self-improving claim: any user can clone the
+  repo and watch the loop close.
+
+### Changed — retro skills require the emitter for Layer 3
+
+- **`cadence-retro` SKILL.md** — Step 4a is now a mandatory protocol
+  for Layer 3 findings: build a finding JSON with a `violation_sample`
+  block, pipe to `tool/emit_rule.py`, check the exit code. The skill
+  refuses to record a Layer 3 fix as "landed" without going through
+  the emitter. Hand-editing `.cadence/cadence.yaml` for Layer 3 is no
+  longer the supported path.
+- **`cadence-retrospective-helper` SKILL.md** — Verifying Layer 3
+  fixes section rewritten to point at the mandatory emitter flow.
+- **`cadence-init` SKILL.md** — Adds `tool/emit_rule.py` and
+  `.cadence/retro.schema.json` to the scaffold so user projects ship
+  the emitter and schema locally.
+
+### Changed — schema
+
+- **`retro.schema.json`** — adds `violation_sample` sub-schema (kind,
+  language, where, import_line, forbidden_pattern, reason). An `allOf`
+  conditional makes `violation_sample` required when
+  `fix_layer == 3 && auto_method == "boundary-rule"`.
+
+### Why this exists
+
+Cadence claims to be "self-improving" because retrospectives update
+`FRAMEWORK_CHANGELOG.md` and patch `docs/PATTERNS.md`. That's true at
+the documentation level, but other frameworks (gstack `/learn`,
+Superpowers retrospectives) make similar claims. The differentiator
+is making the loop close at the **code** level: a Layer 3 retro now
+produces a test fixture + a boundary rule + a passing regression
+check, and the framework refuses to record the finding as landed if
+the rule doesn't actually catch the original violation. None of the
+comparable frameworks (gstack, graphify, Superpowers, GSD) do this.
+
+### Pre-release note
+
+Tagged as `0.3.0-rc.1` (not `0.3.0`) so existing self-hosted-install
+users on `v0.2.1` don't auto-upgrade. Promote to `0.3.0` after dogfood
+runs on at least one external project.
 
 ## [0.2.1] — 2026-05-27
 

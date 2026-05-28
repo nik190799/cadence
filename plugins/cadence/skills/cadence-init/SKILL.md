@@ -52,6 +52,9 @@ corresponding path in the user's repo:
 - `templates/scripts/verify.sh` → `scripts/verify.sh` (+ make executable)
 - `templates/scripts/verify.ps1` → `scripts/verify.ps1`
 - `templates/tool/check_boundaries.py` → `tool/check_boundaries.py`
+- `templates/tool/emit_rule.py` → `tool/emit_rule.py`
+- `schemas/retro.schema.json` → `.cadence/retro.schema.json` (so the
+  emitter can validate locally without reaching into the plugin tree)
 - `templates/.github/workflows/cadence.yml.tmpl` → `.github/workflows/cadence.yml`
 - `templates/CLAUDE.md.tmpl` → append to existing `CLAUDE.md` (or
   create new); preserve any user content above the Cadence section.
@@ -101,7 +104,9 @@ Files created:
   docs/ (10 files)
   scripts/verify.{sh,ps1}
   tool/check_boundaries.py
+  tool/emit_rule.py
   .cadence/cadence.yaml
+  .cadence/retro.schema.json
   .github/workflows/cadence.yml
   CLAUDE.md (patched)
 

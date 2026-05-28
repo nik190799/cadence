@@ -103,6 +103,63 @@
           }
         }
       }
+    },
+    "violation_sample": {
+      "type": "object",
+      "description": "Structured form of the offending code. Consumed by tool/emit_rule.py for Layer 3 boundary-class findings: lets the framework auto-generate a fixture + boundary rule and verify the rule actually fires on this exact sample before the finding is recorded as landed.",
+      "required": ["kind", "where", "import_line", "forbidden_pattern", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["boundary-rule"],
+          "description": "Which auto-emitter handles this sample. Only 'boundary-rule' is wired in v0.3.0-rc.1; future emitters (lint-rule, schema-rule) will add enum values."
+        },
+        "language": {
+          "type": "string",
+          "enum": ["ts", "tsx", "js", "py", "go", "rs", "dart", "java", "kt", "swift"],
+          "description": "File extension hint for the generated fixture. The checker is language-agnostic, but the fixture file needs the right extension to be scanned."
+        },
+        "where": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Glob pattern for the file location that must not perform this import (matches cadence.yaml boundaries[].where). Example: 'src/features/**'."
+        },
+        "import_line": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The exact offending import line as it appeared in the source. The emitter writes this verbatim into the generated fixture."
+        },
+        "forbidden_pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Glob the import resolves to that the rule must forbid (matches cadence.yaml boundaries[].forbidden[]). Example: 'src/data/sources/**'."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 5,
+          "description": "Why this boundary exists. Becomes the cadence.yaml rule's reason field; surfaces in the checker's error output."
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fix_layer": { "const": 3 },
+          "auto_method": { "const": "boundary-rule" }
+        },
+        "required": ["fix_layer", "auto_method"]
+      },
+      "then": {
+        "required": ["violation_sample"],
+        "properties": {
+          "violation_sample": {
+            "properties": { "kind": { "const": "boundary-rule" } }
+          }
+        }
+      }
+    }
+  ]
 }

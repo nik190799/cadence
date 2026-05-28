@@ -57,14 +57,83 @@ For each approved fix:
 
 | Layer | Patch shape |
 |---|---|
-| 3 (Automated) | Edit `.cadence/cadence.yaml` boundaries, add lint rule, or extend `tool/check_boundaries.py` |
+| 3 (Automated) | **Must round-trip through `tool/emit_rule.py`** — see Step 4a |
 | 1 (Patterns) | Create new `docs/ADR/NNNN-<slug>.md` + update `docs/PATTERNS.md` §X to cite it |
 | 2 (Process) | Edit `docs/DEFINITION_OF_DONE.md`, `docs/ROLE_SPECS.md`, or `docs/TEAM_PROTOCOL.md` |
 | 4 (Launch) | Edit `docs/TEAM_LAUNCH_TEMPLATE.md` |
 
-After each Layer 3 patch, re-run `scripts/verify` against the original
-offending diff to confirm the new gate FIRES on the original violation
-(regression test for the rule itself).
+### Step 4a — Layer 3 emission protocol (mandatory)
+
+A Layer 3 finding is **only** considered landed after the framework
+auto-generates a regression fixture and confirms the new rule fires
+on the original offending sample. The emitter enforces this — never
+hand-edit `.cadence/cadence.yaml` for Layer 3 without going through it.
+
+For each approved Layer 3 finding:
+
+1. **Build the finding JSON.** Construct an object matching
+   `plugins/cadence/schemas/retro.schema.json` (or the local copy at
+   `.cadence/retro.schema.json` after `/cadence-init`). The
+   `violation_sample` block is **required** when
+   `auto_method: "boundary-rule"`:
+
+   ```json
+   {
+     "id": "<uuid4>",
+     "ts": "<ISO 8601>",
+     "what_happened": "<one-line>",
+     "auto_catchable": true,
+     "auto_method": "boundary-rule",
+     "rule_existed": false,
+     "proposed_fix": "<concrete action>",
+     "fix_layer": 3,
+     "decision": "approved",
+     "violation_sample": {
+       "kind": "boundary-rule",
+       "language": "ts|py|go|rs|dart|java|kt|swift",
+       "where": "<glob>",
+       "import_line": "<the exact offending import>",
+       "forbidden_pattern": "<glob>",
+       "reason": "<why this boundary exists>"
+     }
+   }
+   ```
+
+2. **Run the emitter:**
+
+   ```bash
+   python tool/emit_rule.py --input finding.json --apply
+   ```
+
+   - `--apply` also appends the new rule to the project's root
+     `.cadence/cadence.yaml` (idempotent — duplicate rules are
+     detected and skipped)
+   - Drop `--apply` if the user wants to review the fixture before
+     merging the rule into the project config
+
+3. **Check the exit code.**
+   - **Exit 0** — fixture written under `tests/fixtures/retro/<id>/`
+     and the new rule fires on the offending sample. The finding is
+     safe to record as landed.
+   - **Exit 1** — the rule did **not** fire. A rule that doesn't
+     catch its own trigger case is worse than no rule. Do NOT record
+     this finding as landed. Revise the `where`, `forbidden_pattern`,
+     or `import_line` and re-run.
+   - **Exit 2** — schema invalid, bad input, or fixture already
+     exists. Read the stderr message; usually a structural issue.
+
+4. **Cite the generated fixture in the changelog.** In Step 5's
+   "Lead's decisions" line, record the fixture path:
+
+   ```
+   - [x] Approved & landed: <fix> — fixture tests/fixtures/retro/<id>/, commit <SHA>
+   ```
+
+5. **Never bypass the emitter for Layer 3.** If a finding can't be
+   expressed as a boundary-rule sample (e.g., requires a new lint
+   rule or schema check), it isn't a `boundary-rule` finding — set
+   `auto_method` to the appropriate value once that emitter ships, or
+   demote it to Layer 1 (patterns) for now and document why.
 
 ## Step 5 — Append to FRAMEWORK_CHANGELOG.md
 
