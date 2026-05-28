@@ -13,6 +13,84 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 - Additional emitter kinds for `tool/emit_rule.py`: lint-rule and
   schema-rule (currently only `boundary-rule` is wired)
 
+## [0.3.0-rc.2] — 2026-05-27
+
+### Added — unified audit-grade compliance report
+
+- **`plugins/cadence/templates/tool/compliance_report.py`** —
+  deterministic, auditor-grade compliance report generator. Scans the
+  project for artifacts declared in standard YAMLs, assigns status
+  (`implemented` / `partial` / `gap` / `planned` / `out-of-scope` /
+  `n/a`), and renders the result as Markdown, JSON, or a single-page
+  printable HTML document. `--reproducible` flag produces byte-stable
+  output for diffable test runs.
+- **Cross-standard reverse index** — the report includes a section
+  mapping each resolved artifact (e.g. `docs/PATTERNS.md`) to *every*
+  standard/control that cites it. An auditor sees an artifact's full
+  coverage in one place instead of cross-referencing four reports.
+- **`--audit-packet`** — bundles the report (md+json+html) with the
+  ADR index, FRAMEWORK_CHANGELOG, PATTERNS, DoD, and the last verify
+  log into a single folder with a MANIFEST.txt. The artifact handed to
+  an auditor is a packet, not a single file.
+- **`plugins/cadence/standards/soc2-2017.yaml`** — stub mapping for
+  the AICPA SOC 2 Trust Services Criteria (Common Criteria families
+  CC1–CC9, plus Availability/Confidentiality/Processing Integrity/
+  Privacy as opt-in). All entries ship with `status: planned` and
+  cadence_artifacts: []. The YAML header is unambiguous: this is
+  roadmap scaffolding, not a compliance claim; real mappings need
+  auditor input.
+- **`plugins/cadence/standards/iso-27001-2022.yaml`** — stub mapping
+  for ISO 27001:2022 Annex A themes A.5–A.8 (organizational, people,
+  physical, technological controls). Same disclaimers as SOC 2 above.
+  A.8 (technological controls) called out as the highest-value
+  mapping target for Phase 3.
+- **`tests/test_compliance_report.py`** — 21 tests. Covers status
+  assignment, reverse-index dedup, format renderers, audit-packet
+  layout, `--reproducible` byte-stability, `--strict` exit codes,
+  `--standard all` and alias resolution, and the standards-dir
+  fallback.
+
+### Changed — cadence-compliance skill
+
+- **`cadence-compliance` SKILL.md** — now delegates the unified report
+  flow (`--standard all`, `--audit-packet`) to the deterministic
+  Python script. Determinism is non-negotiable for auditor-facing
+  output. The legacy per-standard markdown/JSON/SARIF flow remains in
+  the skill for back-compat (SARIF specifically is not yet supported
+  by the script — single-standard skill flow handles it).
+- **`cadence-init` SKILL.md** — scaffolds the new
+  `tool/compliance_report.py` script and the `standards/` directory
+  (all four YAMLs) into user projects.
+
+### Why this exists
+
+Cadence's compliance angle is the lane no comparable Claude Code
+plugin occupies — gstack, Superpowers, GSD, and graphify all lack
+NIST SSDF or ISO 25010 mappings. v0.3.0-rc.2 turns that lane into a
+demoable wedge: clone the repo, run
+
+```
+python plugins/cadence/templates/tool/compliance_report.py \
+    --standard all --format html --audit-packet \
+    --output-dir ./audit \
+    --standards-dir plugins/cadence/standards
+```
+
+and a printable HTML report falls out, with a complete reverse index
+and per-standard status breakdown. SOC 2 and ISO 27001 ship as
+honestly-labelled stubs so the report makes a Phase 3 commitment
+without making a compliance claim Cadence cannot back up.
+
+### Found by dogfood (and fixed before tagging)
+
+Initial CLI test against Cadence's own repo produced an empty report:
+`--standard all` was being parsed as a literal id filter that
+excluded everything. Caught by the dogfood run before the tag; fix +
+regression test landed in the same commit. This is the framework
+working as designed — the bug is real, the fix layer is Patterns
+(naming) / Automation (test added), and the post-mortem entry would
+land in `FRAMEWORK_CHANGELOG.md` if this were a user project.
+
 ## [0.3.0-rc.1] — 2026-05-27
 
 ### Added — retrospective loop closes at the code level

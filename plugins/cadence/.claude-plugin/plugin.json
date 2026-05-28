@@ -1,6 +1,6 @@
 {
   "name": "cadence",
-  "version": "0.3.0-rc.1",
+  "version": "0.3.0-rc.2",
   "description": "Stack-agnostic, self-improving AI development framework — four layers (patterns, process, automated gates, launch) plus a retrospective loop. Aligned with NIST SSDF v1.1, ISO/IEC 25010:2023, ADR (Nygard), Conventional Commits, and SemVer.",
   "author": {
     "name": "Nikhil Kadalge",

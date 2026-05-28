@@ -53,8 +53,11 @@ corresponding path in the user's repo:
 - `templates/scripts/verify.ps1` → `scripts/verify.ps1`
 - `templates/tool/check_boundaries.py` → `tool/check_boundaries.py`
 - `templates/tool/emit_rule.py` → `tool/emit_rule.py`
+- `templates/tool/compliance_report.py` → `tool/compliance_report.py`
 - `schemas/retro.schema.json` → `.cadence/retro.schema.json` (so the
   emitter can validate locally without reaching into the plugin tree)
+- `standards/*.yaml` → `standards/` (so /cadence-compliance can find
+  the mappings locally; the user can edit them per-project)
 - `templates/.github/workflows/cadence.yml.tmpl` → `.github/workflows/cadence.yml`
 - `templates/CLAUDE.md.tmpl` → append to existing `CLAUDE.md` (or
   create new); preserve any user content above the Cadence section.
@@ -105,6 +108,8 @@ Files created:
   scripts/verify.{sh,ps1}
   tool/check_boundaries.py
   tool/emit_rule.py
+  tool/compliance_report.py
+  standards/ (NIST SSDF, ISO 25010, SOC 2 stub, ISO 27001 stub)
   .cadence/cadence.yaml
   .cadence/retro.schema.json
   .github/workflows/cadence.yml
