@@ -32,8 +32,12 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
 
 ## Do not
 
+- **Do not merge or push anything to `main` until the directory review resolves.**
+  The Claude plugin directory tracks `main` and polls it about every 6 hours; any
+  new commit becomes a new version that needs its own scan and review. This
+  includes PR #5 (verify fix) and Dependabot PRs. Other branches are safe.
 - **Do not tag `v0.3.0` or automate the marketplace release.** Still held for the
-  marketplace submission.
+  directory review.
 - **Do not merge `factory` into `main` before the 2026-11-13 gate.** Skill stubs on
   `main` would reach every installed user.
 - **Do not publish eval results that use the private assessment repos**; their hidden tests must stay private.
@@ -44,10 +48,15 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
 1. ~~**Fix the verify marker.**~~ **Done 2026-09-30** on `fix/verify-marker`
    (`3a1306d`), merged into `factory`. Both verify scripts now write
    `.last_verify_ok`, `.last_verify_sha` and `last_verify.log`; tests in
-   `tests/test_verify_markers.py`. Not yet on `main`: needs a push and a PR.
-2. **Check the marketplace submission.** The guide offered the now-retired Console
-   form; if that was used, redo it at claude.ai/directory/manage. Run a trademark
-   check on "Cadence" first (Uber's Cadence workflow engine is a CNCF project).
+   `tests/test_verify_markers.py`. PR #5 to `main` is open but **must wait** for
+   the directory review (see "Do not").
+2. ~~**Check the marketplace submission.**~~ **Checked 2026-10-01.** Submitted in
+   the portal (claude.ai/directory/manage) by nik190799 around 2026-09-25: security
+   scan passed, in review, Publish requested. Version under review: `v0.3.0-rc.2`
+   at `24b88bc`; the portal tracks `main`. Name kept as "Cadence" (decided
+   2026-10-01, despite medium trademark risk from Cadence Design Systems).
+   Submission-doc fixes and a `plugins/cadence/README.md` are prepared locally on
+   `chore/directory-prep`, unpushed, to ship as the first update after approval.
 3. **Start phase 1a, the infra spine:** per-user GitHub App identity with loop
    guards, the agent/verify/publish job split, `claim.py`, and `ledger.py` with a
    hard cap. Specs are in each stub's docstring.
