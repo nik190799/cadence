@@ -64,13 +64,34 @@ plugins/cadence/                       ships to users
   skills/cadence-factory-setup/        GitHub App, budget, autonomy       (stub)
   templates/.github/workflows/
     cadence-factory.yml.tmpl           agent / verify / publish jobs      (skeleton)
+  templates/factory.yaml.tmpl          budget, max_turns, autonomy        (done)
   templates/tool/
-    ledger.py                          cost cap and run log               (stub)
-    claim.py                           ref-claim lock per issue           (stub)
+    ledger.py                          cost cap and run log               (done, tested)
+    claim.py                           ref-claim lock per issue           (done, tested)
     reconcile.py                       hourly sweep for stuck work        (stub)
 eval/                                  internal replay harness; never ships
 docs/FACTORY.md                        this page
 ```
+
+### Wiring still to do (found in review, 2026-10-01)
+
+The tools work; the workflow skeleton does not call them correctly yet.
+
+- **Claim needs a push token.** `claim.py acquire` pushes a ref, so it must
+  run in a job holding the App token, not in the agent job. Pass
+  `--run-id "$GITHUB_RUN_ID"` (acquire is re-entrant for the same run).
+  Release with `if: always()`; the reconciler uses
+  `release --force --sha <sha from stale>` after confirming the run is gone.
+- **One global gate for spending.** `ledger.py check` must run before every
+  dispatch, inside a single concurrency group, with `--in-flight` from the
+  Actions API (`actions: read`). Otherwise two issues can both pass the check.
+- **The ledger needs the result.** The agent job must upload the Claude Code
+  result file, or every record books the full cap. Map job results
+  (`success`/`failure`/`cancelled`/`skipped`) to ledger outcomes, and do not
+  book a run that lost its claim and spent nothing.
+- **Where records live.** Run records go on a state branch, not under
+  `.cadence/` (that folder is human-reviewed and restored from the base
+  branch). Pass `--records-dir` explicitly.
 
 ## Rules that hold in every phase
 

@@ -1,0 +1,35 @@
+# Cadence factory configuration.
+#
+# Rendered by /cadence-factory-setup into .cadence/factory.yaml. Read by
+# tool/ledger.py (the budget) and by .github/workflows/cadence-factory.yml
+# (the per-run cap, max_turns and autonomy). Change it by PR, like anything
+# else under .cadence/.
+#
+# Cadence never pays for, resells or proxies model usage. These caps bound
+# how much of YOUR Anthropic API key the factory may spend. Also set a spend
+# limit on the key itself in the Anthropic Console as a backstop.
+
+budget:
+  # Hard cap for one run, in US dollars. Passed to Claude Code as
+  # --max-budget-usd. A run that reports no cost (crash, timeout, cancel)
+  # is booked at this full amount, never at zero.
+  # Must be greater than 0 and no more than daily_usd.
+  per_run_usd: 5.00
+
+  # Cap on total spend per UTC day (00:00 to 23:59 UTC), in US dollars.
+  # Before each dispatch, `ledger.py check` adds today's booked spend, one
+  # per_run_usd for every run still in flight and one for the new run, and
+  # refuses to start the run if that worst case would exceed this cap.
+  # Must be greater than 0.
+  daily_usd: 25.00
+
+# Maximum agent turns for one run. Passed to Claude Code as --max-turns.
+# A positive whole number.
+max_turns: 60
+
+# How far the factory may go without a human.
+#   pr-only   The factory opens a draft PR; a human always reviews and
+#             merges it. This is the default.
+# Auto-merge is opt-in, per path, and never covers tests, CI config or
+# .cadence/.
+autonomy: pr-only
