@@ -9,6 +9,13 @@
 # Fails fast on first non-zero exit. Prints a Definition-of-Done-shaped
 # summary at the end.
 #
+# Writes verify evidence for tool/compliance_report.py under .cadence/:
+#   last_verify.log   this run's output
+#   .last_verify_ok   present only after a fully green run
+#   .last_verify_sha  the commit verified ("-dirty" if the tree had changes)
+# Stale .last_verify_ok / .last_verify_sha are removed before every run, so
+# a failed or interrupted run never leaves an old pass behind.
+#
 # Usage:  pwsh -File scripts/verify.ps1
 # Exit:   0 = all green; non-zero = first failing step's exit code.
 
@@ -18,6 +25,12 @@ $start = Get-Date
 $Config = if ($env:CADENCE_CONFIG) { $env:CADENCE_CONFIG } else { '.cadence/cadence.yaml' }
 $Root   = if ($env:CADENCE_ROOT)   { $env:CADENCE_ROOT }   else { (Get-Location).Path }
 $ConfigPath = Join-Path $Root $Config
+
+$EvidenceDir = Join-Path $Root '.cadence'
+$OkMarker    = Join-Path $EvidenceDir '.last_verify_ok'
+$ShaMarker   = Join-Path $EvidenceDir '.last_verify_sha'
+$LogFile     = Join-Path $EvidenceDir 'last_verify.log'
+Remove-Item -LiteralPath $OkMarker, $ShaMarker -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path $ConfigPath)) {
     Write-Host "FAIL: cadence config not found at $Config" -ForegroundColor Red
@@ -29,6 +42,31 @@ $Python = (Get-Command python -ErrorAction SilentlyContinue) ?? (Get-Command pyt
 if (-not $Python) {
     Write-Host 'FAIL: python is required (install Python 3.10+)' -ForegroundColor Red
     exit 2
+}
+
+# Record which commit is being verified before anything runs, so files the
+# run itself writes cannot mark the tree dirty.
+$VerifiedSha = ''
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $head = git -C $Root rev-parse --verify -q HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $head) {
+        $VerifiedSha = "$head".Trim()
+        $dirty = git -C $Root status --porcelain -- . `
+            ':(exclude).cadence/.last_verify_ok' `
+            ':(exclude).cadence/.last_verify_sha' `
+            ':(exclude).cadence/last_verify.log' 2>$null
+        if ($dirty) { $VerifiedSha += '-dirty' }
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
+Set-Content -LiteralPath $LogFile -Value '' -NoNewline
+
+# Print a line and append it to last_verify.log.
+function Say {
+    param([string] $Text = '', [string] $Color = '')
+    if ($Color) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+    Add-Content -LiteralPath $LogFile -Value $Text
 }
 
 function Read-Commands {
@@ -53,8 +91,8 @@ for c in cmds:
 
     $output = & $Python.Source -c $script $ConfigPath $Section 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "FAIL: reading commands.$Section from $Config" -ForegroundColor Red
-        $output | ForEach-Object { Write-Host $_ }
+        Say "FAIL: reading commands.$Section from $Config" Red
+        $output | ForEach-Object { Say "$_" }
         exit 2
     }
     return $output | Where-Object { $_ -ne '' }
@@ -66,24 +104,24 @@ function Invoke-Step {
         [string[]] $Commands
     )
 
-    Write-Host ''
-    Write-Host "==> $Label" -ForegroundColor Cyan
+    Say ''
+    Say "==> $Label" Cyan
 
     if (-not $Commands -or $Commands.Count -eq 0) {
-        Write-Host "(no commands configured for $Label; skipping)" -ForegroundColor DarkGray
+        Say "(no commands configured for $Label; skipping)" DarkGray
         return
     }
 
     foreach ($cmd in $Commands) {
         if ($cmd -eq '__MISSING_PYYAML__') {
-            Write-Host 'FAIL: PyYAML not installed (pip install pyyaml)' -ForegroundColor Red
+            Say 'FAIL: PyYAML not installed (pip install pyyaml)' Red
             exit 2
         }
-        Write-Host "`$ $cmd" -ForegroundColor DarkGray
-        cmd /c $cmd
+        Say "`$ $cmd" DarkGray
+        cmd /c $cmd 2>&1 | ForEach-Object { Say "$_" }
         $rc = $LASTEXITCODE
         if ($rc -ne 0) {
-            Write-Host "FAIL: $Label (exit $rc)" -ForegroundColor Red
+            Say "FAIL: $Label (exit $rc)" Red
             exit $rc
         }
     }
@@ -96,30 +134,34 @@ Invoke-Step 'lint'   (Read-Commands 'lint')
 
 # Boundary check is built-in.
 if (Test-Path (Join-Path $Root 'tool/check_boundaries.py')) {
-    Write-Host ''
-    Write-Host '==> boundaries' -ForegroundColor Cyan
-    Write-Host '$ python tool/check_boundaries.py' -ForegroundColor DarkGray
-    & $Python.Source 'tool/check_boundaries.py' '--config' $Config
+    Say ''
+    Say '==> boundaries' Cyan
+    Say '$ python tool/check_boundaries.py' DarkGray
+    & $Python.Source 'tool/check_boundaries.py' '--config' $Config 2>&1 | ForEach-Object { Say "$_" }
     $rc = $LASTEXITCODE
     if ($rc -ne 0) {
-        Write-Host "FAIL: boundaries (exit $rc)" -ForegroundColor Red
+        Say "FAIL: boundaries (exit $rc)" Red
         exit $rc
     }
 } else {
-    Write-Host ''
-    Write-Host '(tool/check_boundaries.py not found; skipping boundary check)' -ForegroundColor DarkGray
+    Say ''
+    Say '(tool/check_boundaries.py not found; skipping boundary check)' DarkGray
 }
 
 Invoke-Step 'test' (Read-Commands 'test')
 
 $elapsed = (Get-Date) - $start
-Write-Host ''
-Write-Host ("OK ({0:N1}s)" -f $elapsed.TotalSeconds) -ForegroundColor Green
-Write-Host ''
-Write-Host 'Definition of Done (mechanical, auto-enforced):'
-Write-Host '  format'
-Write-Host '  lint'
-Write-Host '  boundaries'
-Write-Host '  test'
-Write-Host ''
-Write-Host 'Manual DoD lines (Reviewer responsibility) - see docs/DEFINITION_OF_DONE.md.'
+Say ''
+Say ("OK ({0:N1}s)" -f $elapsed.TotalSeconds) Green
+Say ''
+Say 'Definition of Done (mechanical, auto-enforced):'
+Say '  format'
+Say '  lint'
+Say '  boundaries'
+Say '  test'
+Say ''
+Say 'Manual DoD lines (Reviewer responsibility) - see docs/DEFINITION_OF_DONE.md.'
+
+Set-Content -LiteralPath $OkMarker -Value ('ok ' + (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"))
+if ($VerifiedSha) { Set-Content -LiteralPath $ShaMarker -Value $VerifiedSha }
+exit 0
