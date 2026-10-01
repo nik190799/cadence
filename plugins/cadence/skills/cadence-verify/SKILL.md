@@ -37,6 +37,18 @@ The verify script orchestrates (in order):
 
 Fail-fast: first non-zero exit stops the pipeline.
 
+Every run also writes verify evidence under `.cadence/`, which
+`/cadence-compliance` reads:
+
+- `last_verify.log` — the run's output
+- `.last_verify_ok` — present only after a fully green run
+- `.last_verify_sha` — the commit verified, suffixed `-dirty` if the
+  working tree had uncommitted changes
+
+Stale `.last_verify_ok` and `.last_verify_sha` are removed at the start
+of every run, so a failed run never leaves an old pass behind. Do not
+create or edit these files by hand.
+
 ## Step 3 — Render the checklist
 
 Read `docs/DEFINITION_OF_DONE.md`. For each (auto) line, mark its
