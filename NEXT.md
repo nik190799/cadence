@@ -42,9 +42,10 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
 
 ## Next 3 actions — week 0 (Oct 1–4)
 
-1. **Fix the verify marker.** `scripts/verify.sh` never writes
-   `.cadence/.last_verify_ok`, which `compliance_report.py` needs before any
-   control can read "implemented". Small, and it unblocks the audit packet.
+1. ~~**Fix the verify marker.**~~ **Done 2026-09-30** on `fix/verify-marker`
+   (`3a1306d`), merged into `factory`. Both verify scripts now write
+   `.last_verify_ok`, `.last_verify_sha` and `last_verify.log`; tests in
+   `tests/test_verify_markers.py`. Not yet on `main`: needs a push and a PR.
 2. **Check the marketplace submission.** The guide offered the now-retired Console
    form; if that was used, redo it at claude.ai/directory/manage. Run a trademark
    check on "Cadence" first (Uber's Cadence workflow engine is a CNCF project).
@@ -61,7 +62,6 @@ caught a real repeat.
 
 ## Known broken
 
-- `verify.sh` does not write `.cadence/.last_verify_ok` (see action 1).
 - `docs/case-studies/flutter-sandbox.md` links to `agent_teams_sandbox`, which was
   never pushed (404). Push it or drop the link.
 - `templates/.github/workflows/cadence.yml.tmpl` has no `permissions:` block and
