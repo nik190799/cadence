@@ -13,6 +13,14 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 - Additional emitter kinds for `tool/emit_rule.py`: lint-rule and
   schema-rule (currently only `boundary-rule` is wired)
 
+### Factory mode (in progress, `factory` branch; not shipped)
+- `docs/FACTORY.md` — design, phases, gates and kill criteria
+- Skill stubs: `cadence-intake` (issue → spec), `cadence-factory-setup`
+- Workflow skeleton: `templates/.github/workflows/cadence-factory.yml.tmpl`
+  (agent / verify / publish jobs, reconciler)
+- Tool stubs: `templates/tool/ledger.py`, `claim.py`, `reconcile.py`
+- `eval/README.md` — internal rules-on vs rules-frozen eval plan
+
 ## [0.3.0-rc.2] — 2026-05-27
 
 ### Added — unified audit-grade compliance report

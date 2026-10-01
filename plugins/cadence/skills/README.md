@@ -1,7 +1,8 @@
 # Skills
 
 Each subdirectory here is one Cadence skill (`SKILL.md` file per
-Anthropic's plugin convention). Cadence ships nine skills:
+Anthropic's plugin convention). Cadence ships nine skills, plus two
+factory-mode design stubs on the `factory` branch:
 
 ## Slash-command-style (6)
 
@@ -15,6 +16,8 @@ Invoked explicitly by the user via `/<name>`:
 | `cadence-retro` | `/cadence-retro` | Drive retrospective protocol |
 | `cadence-adr` | `/cadence-adr <title>` | Create next-numbered ADR |
 | `cadence-compliance` | `/cadence-compliance --standard <X>` | Generate compliance report |
+| `cadence-intake` | `/cadence-intake <issue>` | Factory mode: issue → spec (design stub, factory branch) |
+| `cadence-factory-setup` | `/cadence-factory-setup` | Factory mode: App, key, budget, autonomy (design stub, factory branch) |
 
 ## Auto-invoked (3)
 
