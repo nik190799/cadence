@@ -61,6 +61,15 @@ corresponding path in the user's repo:
 - `templates/.github/workflows/cadence.yml.tmpl` → `.github/workflows/cadence.yml`
 - `templates/CLAUDE.md.tmpl` → append to existing `CLAUDE.md` (or
   create new); preserve any user content above the Cadence section.
+- `.gitignore` → append these lines if missing, under a `# Cadence verify
+  evidence` comment. `scripts/verify.{sh,ps1}` write them on every run,
+  and a committed `.last_verify_ok` would claim a pass that never ran on
+  the checked-out code:
+  ```
+  .cadence/.last_verify_ok
+  .cadence/.last_verify_sha
+  .cadence/last_verify.log
+  ```
 
 For each `.tmpl` file, substitute placeholders:
 - `{{project_name}}` → directory name of the project
@@ -114,6 +123,7 @@ Files created:
   .cadence/retro.schema.json
   .github/workflows/cadence.yml
   CLAUDE.md (patched)
+  .gitignore (verify evidence ignored)
 
 Next steps:
   1. Review docs/PATTERNS.md and adjust §1 layer rules for your project.

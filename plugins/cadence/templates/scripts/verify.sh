@@ -10,6 +10,13 @@
 # Fails fast on first non-zero exit. Prints a Definition-of-Done-shaped
 # summary at the end.
 #
+# Writes verify evidence for tool/compliance_report.py under .cadence/:
+#   last_verify.log   this run's output, without colour codes
+#   .last_verify_ok   present only after a fully green run
+#   .last_verify_sha  the commit verified ("-dirty" if the tree had changes)
+# Stale .last_verify_ok / .last_verify_sha are removed before every run, so
+# a failed or interrupted run never leaves an old pass behind.
+#
 # Usage:  scripts/verify.sh
 # Exit:   0 = all green; non-zero = first failing step's exit code.
 
@@ -18,6 +25,12 @@ start_ts=$(date +%s)
 
 CONFIG="${CADENCE_CONFIG:-.cadence/cadence.yaml}"
 ROOT="${CADENCE_ROOT:-$(pwd)}"
+
+EVIDENCE_DIR="$ROOT/.cadence"
+OK_MARKER="$EVIDENCE_DIR/.last_verify_ok"
+SHA_MARKER="$EVIDENCE_DIR/.last_verify_sha"
+LOG_FILE="$EVIDENCE_DIR/last_verify.log"
+rm -f "$OK_MARKER" "$SHA_MARKER"
 
 color_cyan="\033[36m"
 color_green="\033[32m"
@@ -88,37 +101,72 @@ run_step() {
   return 0
 }
 
-cd "$ROOT"
-
-run_step "format" "$(read_commands format)"
-run_step "lint"   "$(read_commands lint)"
-
-# Boundary check is built-in; not configured per project.
-if [ -f "$ROOT/tool/check_boundaries.py" ]; then
-  echo
-  echo -e "${color_cyan}==> boundaries${color_reset}"
-  echo -e "${color_dim}\$ python tool/check_boundaries.py${color_reset}"
-  "$PY" tool/check_boundaries.py --config "$CONFIG"
-  rc=$?
-  if [ $rc -ne 0 ]; then
-    echo -e "${color_red}FAIL: boundaries (exit ${rc})${color_reset}" >&2
-    exit $rc
+# Record which commit is being verified before anything runs, so files the
+# run itself writes cannot mark the tree dirty.
+verified_sha=""
+if git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  verified_sha=$(git -C "$ROOT" rev-parse HEAD)
+  if [ -n "$(git -C "$ROOT" status --porcelain -- . \
+        ':(exclude).cadence/.last_verify_ok' \
+        ':(exclude).cadence/.last_verify_sha' \
+        ':(exclude).cadence/last_verify.log' 2>/dev/null)" ]; then
+    verified_sha="${verified_sha}-dirty"
   fi
-else
-  echo
-  echo -e "${color_dim}(tool/check_boundaries.py not found; skipping boundary check)${color_reset}"
 fi
 
-run_step "test" "$(read_commands test)"
+# Runs in a subshell (it is piped to tee below), so `exit` in a step ends
+# only this function and its status reaches PIPESTATUS.
+main() {
+  cd "$ROOT"
 
-elapsed=$(( $(date +%s) - start_ts ))
-echo
-echo -e "${color_green}OK${color_reset} (${elapsed}s)"
-echo
-echo "Definition of Done (mechanical, auto-enforced):"
-echo "  ✓ format"
-echo "  ✓ lint"
-echo "  ✓ boundaries"
-echo "  ✓ test"
-echo
-echo "Manual DoD lines (Reviewer responsibility) — see docs/DEFINITION_OF_DONE.md."
+  run_step "format" "$(read_commands format)"
+  run_step "lint"   "$(read_commands lint)"
+
+  # Boundary check is built-in; not configured per project.
+  if [ -f "$ROOT/tool/check_boundaries.py" ]; then
+    echo
+    echo -e "${color_cyan}==> boundaries${color_reset}"
+    echo -e "${color_dim}\$ python tool/check_boundaries.py${color_reset}"
+    "$PY" tool/check_boundaries.py --config "$CONFIG"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+      echo -e "${color_red}FAIL: boundaries (exit ${rc})${color_reset}" >&2
+      exit $rc
+    fi
+  else
+    echo
+    echo -e "${color_dim}(tool/check_boundaries.py not found; skipping boundary check)${color_reset}"
+  fi
+
+  run_step "test" "$(read_commands test)"
+
+  elapsed=$(( $(date +%s) - start_ts ))
+  echo
+  echo -e "${color_green}OK${color_reset} (${elapsed}s)"
+  echo
+  echo "Definition of Done (mechanical, auto-enforced):"
+  echo "  ✓ format"
+  echo "  ✓ lint"
+  echo "  ✓ boundaries"
+  echo "  ✓ test"
+  echo
+  echo "Manual DoD lines (Reviewer responsibility) — see docs/DEFINITION_OF_DONE.md."
+}
+
+mkdir -p "$EVIDENCE_DIR"
+raw_log=$(mktemp)
+main 2>&1 | tee "$raw_log"
+rc=${PIPESTATUS[0]}
+
+# The log is evidence for an auditor: strip terminal colour codes.
+esc=$(printf '\033')
+sed "s/${esc}\[[0-9;]*m//g" "$raw_log" > "$LOG_FILE"
+rm -f "$raw_log"
+
+if [ "$rc" -eq 0 ]; then
+  echo "ok $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OK_MARKER"
+  if [ -n "$verified_sha" ]; then
+    echo "$verified_sha" > "$SHA_MARKER"
+  fi
+fi
+exit "$rc"

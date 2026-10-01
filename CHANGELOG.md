@@ -6,6 +6,18 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **`scripts/verify.{sh,ps1}` now write the verify evidence that
+  `tool/compliance_report.py` reads.** Previously neither script wrote
+  `.cadence/.last_verify_ok`, so no control could ever reach
+  `implemented` and audit packets shipped without a verify log. Each run
+  now removes the stale pass marker first, writes
+  `.cadence/last_verify.log` (colour codes stripped), and on a green run
+  writes `.cadence/.last_verify_ok` and `.cadence/.last_verify_sha` (the
+  verified commit, suffixed `-dirty` for uncommitted changes).
+  `/cadence-init` adds the three files to `.gitignore`. Covered by
+  `tests/test_verify_markers.py` (bash everywhere, PowerShell on Windows).
+
 ### Planned for v0.3.0 (still pending)
 - Stack-specific high-accuracy boundary checkers (TS, Python, Go) —
   trigger when basic line-pattern matching produces false positives
