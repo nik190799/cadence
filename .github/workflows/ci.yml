@@ -56,7 +56,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: python -m pip install --quiet pyyaml pytest
+        # jsonschema: tool/emit_rule.py validates findings and exits at
+        # import without it, which takes the whole test run down.
+        run: python -m pip install --quiet pyyaml jsonschema pytest
       - name: Run boundary-checker tests
         run: python -m pytest tests/ -v
 
