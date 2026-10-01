@@ -1,0 +1,156 @@
+# Cadence factory workflow: SKELETON, NOT FUNCTIONAL (factory branch, phase 1a).
+#
+# Shape only: every step marked TODO still has to be written and tested.
+# Before enabling in any repo:
+#   - pin every action to a full commit SHA (project-manager/CICD_PLAN.md)
+#   - verify input names against each action's README
+#   - confirm the concurrency queue syntax from GitHub's 2026-05-07 changelog
+# Design and reasoning: docs/FACTORY.md
+
+name: cadence-factory
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number to (re)run
+        required: true
+      stage:
+        description: spec | build
+        required: true
+  schedule:
+    - cron: "17 * * * *" # hourly, off the hour: the reconciler
+
+# Every job declares its own permissions; nothing is granted by default.
+permissions: {}
+
+# One queue per issue. Never cancel in progress: that would kill an agent mid-run.
+concurrency:
+  group: cadence-issue-${{ github.event.issue.number || inputs.issue || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  # Deterministic routing. No model call, no secrets.
+  route:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+    outputs:
+      stage: ${{ steps.decide.outputs.stage }}
+      issue: ${{ steps.decide.outputs.issue }}
+    steps:
+      - id: decide
+        run: |
+          # TODO(1a): decide the stage from the event alone:
+          #   issues.labeled 'factory'          -> stage=spec
+          #   issue_comment exactly '/approve'  -> stage=build, but ONLY if the
+          #                                        commenter has write access
+          #   workflow_dispatch                 -> stage=inputs.stage
+          #   anything else, or our own App bot -> stage=none (loop guard)
+          echo "stage=none" >> "$GITHUB_OUTPUT"
+          echo "issue=0" >> "$GITHUB_OUTPUT"
+
+  # Issue -> spec comment. Reads untrusted text; holds no push token.
+  intake:
+    needs: route
+    if: needs.route.outputs.stage == 'spec'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - run: echo "TODO(1b) - run claude-code-action with the /cadence-intake skill"
+
+  # Builds the change. No push token: the diff leaves only as an artifact.
+  agent:
+    needs: route
+    if: needs.route.outputs.stage == 'build'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Claim the issue (fails if another run holds it)
+        run: echo "TODO(1a) - python tool/claim.py acquire --issue ${{ needs.route.outputs.issue }}"
+      - name: Run the agent team
+        run: |
+          # TODO(1b): anthropics/claude-code-action@v1 with
+          #   anthropic_api_key: the user's own ANTHROPIC_API_KEY secret
+          #   plugin_marketplaces / plugins: nik190799/cadence
+          #   claude_args: --max-turns N --max-budget-usd X (from .cadence/factory.yaml)
+          echo "TODO"
+      - name: Package the diff
+        run: echo "TODO(1a) - git diff --binary > change.patch"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: change-${{ github.run_id }}
+          path: change.patch
+          if-no-files-found: ignore
+
+  # The Definition of Done gate. Fresh checkout, no secrets, base-branch rules.
+  verify:
+    needs: [route, agent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: change-${{ github.run_id }}
+      - name: Apply the diff, then restore guarded paths from the base branch
+        run: |
+          # TODO(1a): git apply change.patch
+          # then restore tests, CI config and .cadence/ from the base branch so
+          # the agent cannot weaken its own grader.
+          echo "TODO"
+      - name: Run verify
+        run: echo "TODO(1a) - bash scripts/verify.sh"
+
+  # The only job that can push. Mints a fresh App token; runs nothing the agent wrote.
+  publish:
+    needs: [route, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Mint the user's own GitHub App token
+        run: echo "TODO(1a) - actions/create-github-app-token with the user's App secrets"
+      - name: Push cadence/issue-N and open a draft PR
+        run: echo "TODO(1a) - push the fixed branch, open a draft PR with the DoD checklist and cost"
+
+  # Records cost and outcome even when earlier jobs fail or time out.
+  ledger:
+    needs: [route, agent, verify, publish]
+    if: always() && needs.route.outputs.stage == 'build'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - run: echo "TODO(1a) - python tool/ledger.py record (book the full cap when cost is missing)"
+
+  # Hourly sweep: re-derives state from issues, PRs and checks. No model call.
+  reconcile:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+      - run: echo "TODO(1a) - python tool/reconcile.py"

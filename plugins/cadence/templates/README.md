@@ -24,9 +24,13 @@ templates/
     verify.ps1                    # PowerShell orchestrator
   tool/
     check_boundaries.py           # language-agnostic boundary checker
+    ledger.py                     # factory: cost cap + run log (stub, factory branch)
+    claim.py                      # factory: per-issue ref-claim lock (stub, factory branch)
+    reconcile.py                  # factory: hourly sweep (stub, factory branch)
   .github/
     workflows/
       cadence.yml.tmpl            # CI workflow for user's repo
+      cadence-factory.yml.tmpl    # factory: agent/verify/publish jobs (skeleton, factory branch)
   CLAUDE.md.tmpl                  # patches user's CLAUDE.md with pointers
 ```
 
