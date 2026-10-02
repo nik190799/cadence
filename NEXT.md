@@ -74,6 +74,10 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
    (TODO in the publish job).
 3. **Hardening before any real repo:** pin every action to a commit SHA; research
    Anthropic identity federation for GitHub Actions to replace the stored API key.
+4. ~~**Show the gate on the PR.**~~ **Done 2026-10-02** (`a64f9ae`): publish posts a
+   `cadence/verify` check, green only on the exact tree verify tested. Checked live
+   in the sandbox with a scratch run (both outcomes); the sandbox workflow has it
+   (`aa1d5b6`). Sandbox PR #2 was reviewed and merged on 2026-10-02.
 
 ## Kill criteria (2026-11-13)
 
