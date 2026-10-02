@@ -348,3 +348,213 @@ def test_old_positional_rule_and_violation_still_work():
     assert rule.id == ''
     violation = checker.Violation('a.py', 1, 'import x', 'x/**', 'reason')
     assert violation.rule_id == ''
+
+
+# --- Directory-index imports: resolved targets ------------------------------
+
+_DB_RULE_YAML = (
+    'commands:\n  test: ["true"]\nboundaries:\n'
+    '  - where: "src/http/**"\n'
+    '    forbidden: ["src/db/**"]\n'
+    '    reason: "http goes through the domain"\n'
+)
+
+
+def _db_hits(root: Path, rel: str, line: str) -> list:
+    cfg = _project(root, _DB_RULE_YAML)
+    _put(root, rel, line + '\n')
+    return checker.find_violations(root, checker._load_rules(cfg))
+
+
+@pytest.mark.parametrize(
+    'rel,line',
+    [
+        ('src/http/handler.ts', "import { db } from '../db';"),
+        ('src/http/handler.ts', 'import { db } from "../db/index";'),
+        ('src/http/handler.ts', "import { db } from '../db/index.js';"),
+        ('src/http/handler.ts', "import { db } from '../db/';"),
+        ('src/http/handler.ts', 'export * from "../db";'),
+        ('src/http/handler.ts', "export { db } from '../db';"),
+        ('src/http/handler.ts', 'const db = require("../db");'),
+        ('src/http/routes/users.tsx', "import db from '../../db';"),
+        ('src/http/handler.js', "import db from '../db';"),
+        ('src/http/handler.mjs', "import db from '../db';"),
+        ('src/http/handler.cjs', 'const db = require("../db");'),
+        ('src/http/handler.py', 'from ..db import x'),
+        ('src/http/handler.py', 'from src.db import x'),
+        ('src/http/handler.py', 'import src.db'),
+        ('src/http/handler.py', 'import os, src.db as database'),
+        ('src/http/handler.py', 'from .. import db'),
+        ('src/http/handler.py', 'from src import db'),
+        ('src/http/__init__.py', 'from .. import db'),
+    ],
+)
+def test_a_directory_index_import_fires(tmp_path, rel, line):
+    found = _db_hits(tmp_path, rel, line)
+    assert [(v.path, v.line_no, v.line, v.forbidden) for v in found] == [
+        (rel, 1, line, 'src/db/**')
+    ]
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
+        "import { db } from '../db';",
+        'export * from "../db";',
+        'const db = require("../db");',
+    ],
+)
+def test_the_token_match_alone_misses_a_directory_index_import(line):
+    # The reason resolution exists: no token of src/db/** is in the line.
+    tokens = checker._forbidden_tokens('src/db/**')
+    assert not any(checker._line_contains_token(line, t) for t in tokens)
+    assert checker.import_targets('src/http/a.ts', line) == ['src/db']
+
+
+@pytest.mark.parametrize(
+    'rel,line',
+    [
+        ('src/http/handler.ts', "import { u } from '../dbutils';"),
+        ('src/http/handler.ts', "import { u } from '../db-utils';"),
+        ('src/http/handler.ts', "import { db } from './db';"),
+        ('src/http/handler.ts', "import { db } from '../../../db';"),
+        ('src/http/handler.ts', "import { db } from '../../../../src/db';"),
+        ('src/http/handler.ts', "// import { db } from '../db';"),
+        ('src/http/handler.ts', "/* import { db } from '../db'; */"),
+        ('src/http/handler.ts', "import { db } from '@/db';"),
+        ('src/http/handler.ts', "import { db } from 'db';"),
+        ('src/http/handler.ts', "import { up } from '..';"),
+        ('src/http/handler.ts', "const label = 'from ../db';"),
+        ('src/http/handler.py', 'from dbutils import x'),
+        ('src/http/handler.py', 'from db import x'),
+        ('src/http/handler.py', 'from .db import x'),
+        ('src/http/handler.py', 'from . import db'),
+        ('src/http/handler.py', 'from .... import db'),
+        ('src/http/handler.py', '# from ..db import x'),
+        ('src/http/handler.go', 'import "../db"'),
+    ],
+)
+def test_lookalikes_and_unresolved_imports_do_not_fire(tmp_path, rel, line):
+    assert _db_hits(tmp_path, rel, line) == []
+
+
+def test_a_line_with_a_token_and_a_target_is_one_violation(tmp_path):
+    line = "import { a } from '../db/a';"
+    found = _db_hits(tmp_path, 'src/http/handler.ts', line)
+    assert [(v.line, v.forbidden) for v in found] == [(line, 'src/db/**')]
+
+
+def test_two_forbidden_patterns_each_fire_once_per_line(tmp_path):
+    cfg = _project(
+        tmp_path,
+        'commands:\n  test: ["true"]\nboundaries:\n'
+        '  - where: "src/http/**"\n'
+        '    forbidden: ["src/db/**", "src/db/index*"]\n'
+        '    reason: "http goes through the domain"\n',
+    )
+    _put(tmp_path, 'src/http/a.ts', "import { db } from '../db/index';\nimport { c } from '../db';\n")
+    found = checker.find_violations(tmp_path, checker._load_rules(cfg))
+    assert [(v.line_no, v.forbidden) for v in found] == [
+        (1, 'src/db/**'),
+        (1, 'src/db/index*'),
+        (2, 'src/db/**'),
+    ]
+
+
+def test_where_still_limits_a_resolved_import(tmp_path):
+    cfg = _project(tmp_path, _DB_RULE_YAML)
+    _put(tmp_path, 'src/domain/a.ts', "import { db } from '../db';\n")
+    _put(tmp_path, 'src/http/b.ts', "import { db } from '../db';\n")
+    rules = checker._load_rules(cfg)
+    assert [v.path for v in checker.find_violations(tmp_path, rules)] == ['src/http/b.ts']
+    found = checker.find_violations(tmp_path, rules, paths=['src/http/b.ts', 'src/domain/a.ts'])
+    assert [(v.path, v.line) for v in found] == [('src/http/b.ts', "import { db } from '../db';")]
+
+
+def test_a_glob_only_pattern_fires_on_a_resolved_target(tmp_path):
+    # No literal prefix means no tokens; the resolved target still matches.
+    cfg = _project(
+        tmp_path,
+        'commands:\n  test: ["true"]\nboundaries:\n'
+        '  - where: "src/http/**"\n'
+        '    forbidden: ["**/db/**"]\n'
+        '    reason: "no db anywhere"\n',
+    )
+    assert checker._forbidden_tokens('**/db/**') == []
+    _put(tmp_path, 'src/http/a.ts', "import { db } from '../db';\nimport { u } from '../dbutils';\n")
+    found = checker.find_violations(tmp_path, checker._load_rules(cfg))
+    assert [(v.line_no, v.forbidden) for v in found] == [(1, '**/db/**')]
+
+
+def test_main_reports_a_directory_index_import(tmp_path, capsys):
+    _project(tmp_path, _DB_RULE_YAML)
+    _put(tmp_path, 'src/http/server.ts', "import { query } from '../db';\n")
+    assert checker.main(['--root', str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert 'src/http/server.ts:1' in err and 'forbidden: src/db/**' in err
+
+
+@pytest.mark.parametrize(
+    'rel,line,expected',
+    [
+        ('src/http/a.ts', "import { db } from '../db';", ['src/db']),
+        ('src/http/a.ts', "import a from './x'; import b from '../y/z';", ['src/http/x', 'src/y/z']),
+        ('src/http/a.ts', "import a from '../db'; import b from '../db';", ['src/db']),
+        ('src/http/a.ts', "import { up } from '.';", ['src/http']),
+        ('src/http/a.ts', "import { up } from '..';", ['src']),
+        ('src/http/a.ts', "import { up } from '../..';", []),
+        ('src/http/a.ts', "import x from 'lodash';", []),
+        ('src/http/a.ts', "import x from '@/db';", []),
+        ('src/http/a.ts', "import x from '/abs/db';", []),
+        ('a.ts', "import x from '../db';", []),
+        (
+            'src/http/a.py',
+            'from src.db.models import (User, Order)  # noqa',
+            ['src/db/models', 'src/db/models/User', 'src/db/models/Order'],
+        ),
+        ('src/http/a.py', 'from src.db import *', ['src/db']),
+        ('src/http/a.py', 'from ..db.client import connect as c', ['src/db/client', 'src/db/client/connect']),
+        ('src/http/a.py', 'from . import routes', ['src/http/routes']),
+        ('src/http/a.py', 'from .. import db, cache', ['src/db', 'src/cache']),
+        ('src/http/a.py', 'from ... import db', ['db']),
+        ('src/http/a.py', 'from .... import db', []),
+        ('a.py', 'from . import db', ['db']),
+        ('a.py', 'from .. import db', []),
+        ('src/http/a.py', 'import src.db.client as c, os', ['src/db/client', 'os']),
+        ('src/http/a.py', 'import (bad)', []),
+        ('src/http/a.dart', "import '../db/a.dart';", []),
+        ('src/http/a.go', 'import "../db"', []),
+        ('src/http/README.md', "import x from '../db';", []),
+    ],
+)
+def test_import_targets(rel, line, expected):
+    assert checker.import_targets(rel, line) == expected
+
+
+@pytest.mark.parametrize(
+    'target,pattern,expected',
+    [
+        ('src/db', 'src/db/**', True),
+        ('src/db', 'src/db/*', True),
+        ('src/db/index', 'src/db/**', True),
+        ('src/db/a/b.js', 'src/db/**', True),
+        ('src/db', 'src/db', True),
+        ('src/a/db', 'src/*/db/**', True),
+        ('src/dbutils', 'src/db/**', False),
+        ('src/db-utils', 'src/db/**', False),
+        ('src/db.json', 'src/db/**', False),
+        ('src/http/db', 'src/db/**', False),
+        ('src', 'src/db/**', False),
+        ('SRC/DB', 'src/db/**', False),
+        ('', 'src/db/**', False),
+        ('.', '**', False),
+        ('..', '**', False),
+        ('../db', '**', False),
+        ('/src/db', '**', False),
+        ('src/db/', 'src/db/**', False),
+        ('src/db', '', False),
+        ('src/db', '/**', False),
+    ],
+)
+def test_target_matches(target, pattern, expected):
+    assert checker._target_matches(target, pattern) is expected
