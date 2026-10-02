@@ -166,6 +166,7 @@ def test_template_parses_and_passes_validation(tmp_path, capsys):
     assert config.daily_usd == 25.0
     assert config.max_turns == 60
     assert config.autonomy == "pr-only"
+    assert config.retry_on_dod_fail == 1
 
     rc = ledger.main(
         [
@@ -935,3 +936,61 @@ def test_invalid_learning_block_exits_2(project, capsys, block, needle):
         ledger.load_learning(project / ".cadence" / "factory.yaml")
     assert _main(project, "check", "--now", str(NOON)) == 2
     assert needle in capsys.readouterr().err
+
+
+# --- retry.on_dod_fail (the one automatic retry on a failed gate) -------------
+
+
+@pytest.mark.parametrize(
+    "block,expected",
+    [
+        ("", 1),
+        ("retry:\n", 1),
+        ("retry: {}\n", 1),
+        ("retry:\n  on_dod_fail: 1\n", 1),
+        ("retry:\n  on_dod_fail: 0\n", 0),
+    ],
+)
+def test_retry_on_dod_fail_defaults_to_one(tmp_path, block, expected):
+    path = tmp_path / "factory.yaml"
+    path.write_text(GOOD_CONFIG + block, encoding="utf-8")
+    assert ledger.load_config(path).retry_on_dod_fail == expected
+
+
+@pytest.mark.parametrize(
+    "block,needle",
+    [
+        ("retry:\n  on_dod_fail: true\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail: false\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail: 2\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail: -1\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail: '1'\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail: 1.0\n", "on_dod_fail"),
+        ("retry:\n  on_dod_fail:\n", "on_dod_fail"),
+        ("retry: 1\n", "mapping"),
+        ("retry: [1]\n", "mapping"),
+        ("retry:\n  on_dod_fail: 1\n  max: 2\n", "unknown keys"),
+    ],
+)
+def test_invalid_retry_block_exits_2(project, capsys, block, needle):
+    (project / ".cadence" / "factory.yaml").write_text(GOOD_CONFIG + block, encoding="utf-8")
+    with pytest.raises(ledger.LedgerError):
+        ledger.load_config(project / ".cadence" / "factory.yaml")
+    assert _main(project, "check", "--now", str(NOON)) == 2
+    assert needle in capsys.readouterr().err
+    # record refuses too, and writes nothing
+    assert _record(project, "--cost-usd", "1") == 2
+    assert not _records(project).exists()
+
+
+def test_retry_setting_leaves_the_check_math_unchanged(project, capsys):
+    """The workflow counts a run in its retry twice in --in-flight; check
+    itself adds exactly one per_run_usd, whatever retry says."""
+    rc_on, on = _check(project, capsys, in_flight=2)
+    (project / ".cadence" / "factory.yaml").write_text(
+        GOOD_CONFIG + "retry:\n  on_dod_fail: 0\n", encoding="utf-8"
+    )
+    rc_off, off = _check(project, capsys, in_flight=2)
+    assert rc_on == rc_off == 0
+    assert on == off
+    assert on["worst_case"] == 15.0  # nothing spent, 2 slots in flight and this run, at $5

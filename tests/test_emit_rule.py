@@ -808,6 +808,79 @@ def test_replay_without_fixtures_is_ok(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+# --- Directory-index imports (check_boundaries resolves relative imports) ----
+
+INDEX_LINE = "import { db } from '../db';"
+
+
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        ("src/domain/order.ts", INDEX_LINE),
+        ("src/domain/order.ts", 'export * from "../db";'),
+        ("src/domain/order.ts", "const db = require('../db');"),
+        ("src/domain/order.py", "from .. import db"),
+        ("src/domain/order.py", "from ..db import session"),
+    ],
+)
+def test_factory_provenance_with_a_directory_index_import_fires(tmp_path, capsys, path, line):
+    project = _project_skeleton(tmp_path)
+    finding = _factory_finding(import_line=line)
+    patch = FACTORY_PATCH.replace("src/domain/order.ts", path).replace(FACTORY_LINE, line)
+    rc = _factory_run(tmp_path, project, finding, path=path, patch=patch, extra=("--must-pass-root", "--apply", "--json"))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert (out["fired"], out["exit"], out["applied"], out["sample"]) == (True, 0, True, path)
+    assert out["violations"] == 1
+    sample = _fixture_dir(project, finding) / path
+    assert line in sample.read_text(encoding="utf-8").splitlines()
+    rules = yaml.safe_load((project / ".cadence" / "cadence.yaml").read_text(encoding="utf-8"))["boundaries"]
+    assert rules[-1]["forbidden"] == ["src/db/**"]
+
+
+def test_must_pass_root_exits_3_on_a_directory_index_import_on_main(tmp_path, capsys):
+    project = _project_skeleton(tmp_path)
+    legacy = project / "src" / "domain" / "legacy.ts"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("// legacy\nimport { query } from '../db';\n", encoding="utf-8")
+    config_before = (project / ".cadence" / "cadence.yaml").read_bytes()
+    finding = _factory_finding(import_line=INDEX_LINE)
+    patch = FACTORY_PATCH.replace(FACTORY_LINE, INDEX_LINE)
+    rc = _factory_run(tmp_path, project, finding, patch=patch, extra=("--must-pass-root", "--apply", "--json"))
+    assert rc == 3
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert (out["exit"], out["fixture"], out["fired"]) == (3, None, True)
+    assert out["root_violations"] == [{"path": "src/domain/legacy.ts", "line_no": 2}]
+    assert not _fixture_dir(project, finding).exists()
+    assert (project / ".cadence" / "cadence.yaml").read_bytes() == config_before
+
+
+def test_must_pass_root_ignores_lookalike_imports_on_main(tmp_path):
+    project = _project_skeleton(tmp_path)
+    domain = project / "src" / "domain"
+    domain.mkdir(parents=True)
+    (domain / "a.ts").write_text(
+        "import { u } from '../dbutils';\nimport { v } from './db';\nimport { w } from '@/db';\n",
+        encoding="utf-8",
+    )
+    (project / "src" / "http").mkdir()
+    (project / "src" / "http" / "b.ts").write_text("import { db } from '../db';\n", encoding="utf-8")
+    finding = _factory_finding(import_line=INDEX_LINE)
+    patch = FACTORY_PATCH.replace(FACTORY_LINE, INDEX_LINE)
+    assert _factory_run(tmp_path, project, finding, patch=patch, extra=("--must-pass-root",)) == 0
+
+
+def test_replay_fires_on_a_directory_index_fixture(tmp_path, capsys):
+    project = _project_skeleton(tmp_path)
+    finding = _factory_finding(import_line=INDEX_LINE)
+    patch = FACTORY_PATCH.replace(FACTORY_LINE, INDEX_LINE)
+    assert _factory_run(tmp_path, project, finding, patch=patch) == 0
+    capsys.readouterr()
+    assert emitter.main(["--replay", "--json", "--project-root", str(project)]) == 0
+    result = json.loads(capsys.readouterr().out.strip())
+    assert result == {"fixture": _rule_id(finding)[2:], "rule_id": _rule_id(finding), "fired": True}
+
+
 def test_force_restores_the_old_fixture_when_reemission_fails(tmp_path):
     project = _project_skeleton(tmp_path)
     finding = _factory_finding()

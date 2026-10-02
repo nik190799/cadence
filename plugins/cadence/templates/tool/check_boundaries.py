@@ -17,10 +17,42 @@ Usage:
 
 The checker is line-pattern based. It recognises ``import``, ``from``,
 ``require(``, ``use``, ``include``, ``#include``, and ``mod`` at the
-start of a (stripped) line, then checks the line for forbidden path
-substrings. This catches ~95 percent of real violations across the
-languages above without needing per-language ASTs. Higher-accuracy
-stack-specific adapters land in Cadence Phase 2.
+start of a (stripped) line, then checks the line two ways. A forbidden
+pattern fires on the line when either one hits (still at most one
+violation per pattern per line):
+
+    Tokens      the line contains a path-shaped token of the pattern
+                (``_forbidden_tokens``), for every language above.
+    Targets     the line's import resolves, lexically, to a repo path the
+                pattern matches (``import_targets``, ``_target_matches``),
+                for TS/JS and Python files only.
+
+Targets catch what tokens cannot: a directory-index import such as
+``from '../db'`` names no ``db/`` token, yet it imports ``src/db``.
+Resolution never touches the filesystem, so a fixture proves it:
+
+    TS/JS (.ts .tsx .js .jsx .mjs .cjs)
+        every relative specifier (``.``, ``..``, ``./x``, ``../x``) is
+        posix-normalised against the importing file's directory.
+        Aliases (``@/db``), packages and absolute paths give no target.
+    Python (.py)
+        ``from M import a, b`` gives M, M/a and M/b; ``import M1, M2 as x``
+        gives M1 and M2 (dots become ``/``, no ``src/`` fallback). A
+        relative ``from ..M import a`` resolves against the file's package,
+        climbing dots-1 levels; ``from . import a`` gives <package>/a.
+
+A target that is the root or leaves it is dropped. A target fires a
+pattern when ``fnmatch.fnmatchcase`` matches, or when the pattern ends in
+``/**`` or ``/*`` and the target is the directory itself (it matches the
+pattern without that suffix; for a literal prefix, plain equality). So
+``../db``, ``../db/index`` and ``../db/index.js`` from ``src/http/`` fire
+``src/db/**``; ``../dbutils`` (``src/dbutils``) and ``./db``
+(``src/http/db``) do not. A pattern with no literal prefix
+(``**/db/**``) has no tokens, so only a resolved target can fire it.
+
+Line patterns catch ~95 percent of real violations across the languages
+above without needing per-language ASTs. Higher-accuracy stack-specific
+adapters land in Cadence Phase 2.
 
 Rule ids:
     Each rule has an id. An explicit ``id`` must match ``^[LB]-[0-9a-f]{8}$``
@@ -45,6 +77,7 @@ import argparse
 import fnmatch
 import hashlib
 import os
+import posixpath
 import re
 import stat
 import sys
@@ -131,6 +164,22 @@ _RULE_ID = re.compile(RULE_ID_RE)
 # as part of the project.
 RETRO_FIXTURE_PREFIX = "tests/fixtures/retro/"
 
+# Files whose imports ``import_targets`` resolves.
+_TS_EXTS: frozenset[str] = frozenset({'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'})
+_PY_EXT = '.py'
+
+# Loose TS/JS specifier extraction (the same expression as signals.py's
+# _TS_SPEC; copied, not imported, so the checker stays standalone).
+_TS_SPEC = re.compile(
+    r"""(?:\bfrom\s*|^\s*import\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(['"])([^'"\\\s]{1,150})\1"""
+)
+_PY_FROM = re.compile(
+    r'^\s*from\s+(\.*)([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?\s+import\b(.*)$'
+)
+_PY_IMPORT = re.compile(r'^\s*import\s+(.+)$')
+_PY_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+_PY_DOTTED = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*')
+
 
 class ConfigError(Exception):
     """The cadence config cannot be used. ``_load_rules`` exits 2 on it."""
@@ -192,12 +241,16 @@ def _forbidden_tokens(pattern: str) -> list[str]:
     - Colon form (Rust):          ``src::data::sources::``
 
     Relative imports drop leading project segments (``../../...``), so
-    we also generate every meaningful suffix (≥ 2 segments) in each
-    form. ``data/sources/`` catches ``../../data/sources/X``;
-    ``data.sources.`` catches ``from x.data.sources.X import y``.
+    we also generate every suffix in each form, down to the last segment
+    alone. ``data/sources/`` catches ``../../data/sources/X``;
+    ``data.sources.`` catches ``from x.data.sources.X import y``;
+    ``sources/`` catches ``../sources/X``. ``_line_contains_token`` needs
+    a non-identifier character to the token's left, so ``sources/`` does
+    not match inside ``mysources/``.
 
-    Single-segment tokens are excluded — they're too generic and would
-    catch unrelated paths.
+    Every token ends in a separator, so an import that ends at the
+    directory itself (``from '../sources'``) has no token. The resolved
+    import target catches that case (``import_targets``).
     """
     prefix = pattern
     for i, ch in enumerate(pattern):
@@ -247,6 +300,114 @@ def _line_contains_token(line: str, token: str) -> bool:
         if not (prev.isalnum() or prev == '_'):
             return True
         start = idx + 1
+
+
+# --- Resolved import targets ----------------------------------------------------
+
+
+def _norm_target(path: str) -> str | None:
+    """A normalised repo-relative posix path; None for the root or outside it."""
+    if not path:
+        return None
+    joined = posixpath.normpath(path)
+    if joined in ('.', '..') or joined.startswith(('/', '../')):
+        return None
+    return joined
+
+
+def _py_names(text: str) -> list[str]:
+    """The imported names of ``from M import <text>`` (``*`` gives none)."""
+    text = text.split('#', 1)[0].strip().strip('()').strip()
+    names: list[str] = []
+    for part in text.split(','):
+        tokens = part.strip().strip('()').split()
+        if tokens and _PY_NAME.fullmatch(tokens[0]):
+            names.append(tokens[0])
+    return names
+
+
+def _py_targets(rel: str, line: str) -> list[str]:
+    match = _PY_FROM.match(line)
+    if match:
+        dots, module, rest = match.group(1), match.group(2), match.group(3)
+        names = _py_names(rest)
+        if dots:
+            package = posixpath.dirname(rel)
+            for _ in range(len(dots) - 1):
+                if package == '':
+                    return []  # above the root
+                package = posixpath.dirname(package)
+            if not module:
+                # ``from . import a``: the names, never the package itself.
+                return [posixpath.join(package, name) for name in names]
+            base = posixpath.join(package, module.replace('.', '/'))
+        elif module:
+            base = module.replace('.', '/')
+        else:
+            return []
+        return [base] + [posixpath.join(base, name) for name in names]
+    match = _PY_IMPORT.match(line)
+    if not match:
+        return []
+    targets: list[str] = []
+    for part in match.group(1).split('#', 1)[0].split(','):
+        tokens = part.strip().split()
+        if tokens and _PY_DOTTED.fullmatch(tokens[0]):
+            targets.append(tokens[0].replace('.', '/'))
+    return targets
+
+
+def _ts_targets(rel: str, line: str) -> list[str]:
+    here = posixpath.dirname(rel)
+    targets: list[str] = []
+    for _, spec in _TS_SPEC.findall(line):
+        if spec in ('.', '..') or spec.startswith(('./', '../')):
+            targets.append(posixpath.join(here, spec))
+    return targets
+
+
+def import_targets(rel: str, line: str) -> list[str]:
+    """Repo-relative posix paths the import on ``line`` of file ``rel`` names.
+
+    Lexical only: nothing is read from disk, so ``../db`` from
+    ``src/http/a.ts`` gives ``src/db`` whether or not that is a directory.
+    Only TS/JS and Python files resolve; any other file gives ``[]``. TS/JS
+    aliases, packages and absolute specifiers give nothing; Python names
+    are taken as written (no ``src/`` fallback). Targets that are the root
+    or leave it are dropped. The result is de-duplicated, in line order.
+    """
+    ext = posixpath.splitext(rel)[1]
+    if ext in _TS_EXTS:
+        raw = _ts_targets(rel, line)
+    elif ext == _PY_EXT:
+        raw = _py_targets(rel, line)
+    else:
+        return []
+    targets: list[str] = []
+    for item in raw:
+        target = _norm_target(item)
+        if target is not None and target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _target_matches(target: str, pattern: str) -> bool:
+    """True if the resolved import ``target`` falls under ``pattern``.
+
+    ``fnmatch.fnmatchcase`` on the whole target, or, for a pattern ending
+    in ``/**`` or ``/*``, the target is the directory itself (it matches
+    the pattern minus that suffix; for a literal prefix, plain equality).
+    The root and targets outside it never match.
+    """
+    if not target or not pattern or _norm_target(target) != target:
+        return False
+    if fnmatch.fnmatchcase(target, pattern):
+        return True
+    for suffix in ('/**', '/*'):
+        if pattern.endswith(suffix):
+            base = pattern[: -len(suffix)]
+            return bool(base) and fnmatch.fnmatchcase(target, base)
+    return False
 
 
 def seed_rule_id(where: str, forbidden: Sequence[str]) -> str:
@@ -391,7 +552,10 @@ def find_violations(
 ) -> list[Violation]:
     """Violations of ``rules`` under ``root``.
 
-    With ``paths``, only those repo-relative posix paths are scanned.
+    With ``paths``, only those repo-relative posix paths are scanned. A
+    forbidden pattern fires on an import line when one of its tokens is in
+    the line, or when one of the line's resolved targets matches it; at
+    most one violation per forbidden pattern per line.
     """
     violations: list[Violation] = []
     forbidden_entries: list[tuple[Rule, str, list[str]]] = [
@@ -409,7 +573,7 @@ def find_violations(
         applicable: list[tuple[Rule, str, list[str]]] = [
             (rule, forbidden, tokens)
             for rule, forbidden, tokens in forbidden_entries
-            if _matches_where(rel, rule.where) and tokens
+            if _matches_where(rel, rule.where)
         ]
         if not applicable:
             continue
@@ -424,20 +588,25 @@ def find_violations(
             line = raw.rstrip('\n\r')
             if not _is_import_line(line):
                 continue
+            targets: list[str] | None = None
             for rule, forbidden, tokens in applicable:
-                for token in tokens:
-                    if _line_contains_token(line, token):
-                        violations.append(
-                            Violation(
-                                path=rel,
-                                line_no=line_no,
-                                line=line.strip(),
-                                forbidden=forbidden,
-                                reason=rule.reason,
-                                rule_id=rule.id,
-                            )
+                hit = any(_line_contains_token(line, token) for token in tokens)
+                if not hit:
+                    if targets is None:
+                        targets = import_targets(rel, line)
+                    hit = any(_target_matches(t, forbidden) for t in targets)
+                if hit:
+                    # one violation per forbidden pattern per line
+                    violations.append(
+                        Violation(
+                            path=rel,
+                            line_no=line_no,
+                            line=line.strip(),
+                            forbidden=forbidden,
+                            reason=rule.reason,
+                            rule_id=rule.id,
                         )
-                        break  # one violation per forbidden pattern per line
+                    )
     return violations
 
 

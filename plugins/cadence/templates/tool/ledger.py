@@ -14,9 +14,21 @@ Config (``--config``, default ``.cadence/factory.yaml``)::
       daily_usd: 25.00    # cap for one UTC day
     max_turns: 60         # optional; a positive integer when present
     autonomy: pr-only     # not read by the ledger
+    retry:                # optional
+      on_dod_fail: 1      # 0 or 1 (default 1): one retry on a failed gate
 
     Both budget numbers must be present, finite and > 0, and
     ``per_run_usd <= daily_usd``. Anything else exits 2.
+
+    ``retry.on_dod_fail`` is read by the workflow (``Config.
+    retry_on_dod_fail``): 1 lets a build whose Definition of Done gate
+    failed at format, lint, boundaries or test run the agent once more in
+    the same run. It must be the integer 0 or 1 (a boolean is refused);
+    an unknown key under ``retry``, or a ``retry`` that is not a mapping,
+    exits 2. An empty ``retry:`` means the default. The ledger's own math
+    is unchanged: the workflow asks ``check`` before a retry starts, with
+    the run itself counted in ``--in-flight``, so a run in its retry
+    counts twice.
 
     An optional ``learning:`` block configures the learning loop (see
     docs/LEARNING.md); ``load_learning()`` returns it with defaults
@@ -155,6 +167,7 @@ DEFAULT_EDIT_IGNORE: tuple[str, ...] = (
 )
 DEFAULT_LEARN_PER_RUN_USD = 0.25
 DEFAULT_LEARN_DAILY_USD = 1.00
+DEFAULT_RETRY_ON_DOD_FAIL = 1
 
 EXIT_OK = 0
 EXIT_BLOCKED = 1
@@ -224,6 +237,8 @@ class Config:
     max_turns: int | None
     autonomy: str | None
     learning: LearningConfig = field(default_factory=LearningConfig)
+    # retry.on_dod_fail: 0 (off) or 1 (one retry on a failed gate).
+    retry_on_dod_fail: int = DEFAULT_RETRY_ON_DOD_FAIL
 
 
 @dataclass(frozen=True)
@@ -344,7 +359,35 @@ def validate_config(raw: Any, source: str = "factory.yaml") -> Config:
         max_turns=max_turns,
         autonomy=None if autonomy is None else str(autonomy),
         learning=learning,
+        retry_on_dod_fail=parse_retry(raw.get("retry"), source),
     )
+
+
+_RETRY_KEYS = frozenset({"on_dod_fail"})
+
+
+def parse_retry(raw: Any, source: str = "factory.yaml") -> int:
+    """``retry.on_dod_fail`` (0 or 1; default 1). Raises LedgerError.
+
+    An absent or empty ``retry:`` means the default. Anything else must be
+    a mapping with no key but ``on_dod_fail``, whose value is the integer
+    0 or 1: a boolean, a string or a null is refused, so a typo cannot
+    quietly turn the retry on or off.
+    """
+    where = f"{source}: retry"
+    if raw is None:
+        return DEFAULT_RETRY_ON_DOD_FAIL
+    if not isinstance(raw, dict):
+        raise LedgerError(f"{where} must be a mapping")
+    unknown = sorted(str(key) for key in raw if key not in _RETRY_KEYS)
+    if unknown:
+        raise LedgerError(f"{where} has unknown keys: {', '.join(unknown)}")
+    if "on_dod_fail" not in raw:
+        return DEFAULT_RETRY_ON_DOD_FAIL
+    value = raw["on_dod_fail"]
+    if not _is_count(value) or value not in (0, 1):
+        raise LedgerError(f"{where}.on_dod_fail must be 0 or 1 (got {value!r})")
+    return value
 
 
 _LEARNING_KEYS = frozenset(

@@ -5,8 +5,9 @@ title: Learning loop
 
 # Learning loop
 
-> **Status: built 2026-10-02 on the `factory` branch (phase 1b); not yet run
-> on GitHub.** Open items are listed under [Open questions](#open-questions). Part of
+> **Status: built 2026-10-02 on the `factory` branch (phase 1b); a first
+> live learn run in the sandbox harvested one PR and proposed nothing.**
+> Open items are listed under [Open questions](#open-questions). Part of
 > [factory mode](FACTORY.md). Background: "How it learns" and "Measurement"
 > in the [decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
 
@@ -47,6 +48,7 @@ Three rules shape the design:
 | Build | `agent` | read; Anthropic key | `change.patch` artifact |
 | Gate | `verify` | read; no secrets | result and log |
 | Scan | `observe` (new) | read; no secrets | observation and findings, as a job output |
+| Retry, once, if the gate failed at format, lint, boundaries or test | `retry-gate`, `agent-retry`, `verify-retry`, `observe-retry` | read; Anthropic key in `agent-retry` only | a second attempt, observed and booked as `<run>.retry1` |
 | Book | `ledger` | App | `observations/`, `findings/`, `patches/`, `prs/` on `cadence/state` |
 | PR closed | `harvest` (new) | read | human-edit and review findings |
 | Label (optional, off by default) | `classify` (new) | read; Anthropic key | enum labels only |
@@ -55,7 +57,8 @@ Three rules shape the design:
 | Publish | `retro-publish` (new) | App | branch `cadence/retro` and one PR |
 | Decide | a human | none | merge, delete an entry, or close |
 
-In build runs, `observe` sits between `verify` and `ledger`. The learn chain
+In build runs, `observe` sits between `verify` and `ledger`, and
+`observe-retry` does the same for the retry. The learn chain
 (`harvest` → `classify` → `learn-record` → `retro-plan` → `retro-publish`) runs
 in two cases:
 
@@ -73,6 +76,13 @@ An **attempt** is one build run attempt whose agent produced a patch that
 applies to its base commit. Runs with an empty or broken patch, or a
 cancelled agent, count as operations, not attempts. Re-runs with an identical
 patch collapse into one: attempts are unique by `(issue, patch_sha256)`.
+
+A build's one automatic retry ([factory mode](FACTORY.md)) is a second
+attempt in the same run. It starts from the first attempt's patch, so its
+own patch differs, and it is observed and booked under the run id
+`<run>.retry1` with the same run attempt. A first attempt that failed the
+gate stays a real attempt, with its own observation. The first-pass verify
+rate counts the first attempt only.
 
 Each attempt gets one **observation** (`observation.schema.json`). It holds
 ids, results and these evidence lists, each capped at 200 entries:
@@ -157,8 +167,13 @@ file is created once and never changed.
 | `harvest/pr-<pr>.json` | marks the PR as harvested | `learn-record` |
 | `decisions/retro-pr-<pr>.json` | what a closed retro PR proposed, and what landed | `learn-record` |
 | `retro/plans/<plan_sha>.json` | each published plan | `retro-publish` |
+| `retro/failed/<plan_sha>.json` | a plan whose result failed `verify.sh` even with its checks demoted; `ladder.py plan` skips it until `main` or the plan changes. Read by its path only | `retro-failed` |
 | `learn/<run>-<attempt>.json` | a learn run finished, with the observations it saw | `learn-record` |
 | `reports/metrics-<date>.json` | the first metrics snapshot of each UTC day | `learn-record` |
+
+A build's retry is booked under the run id `<run>.retry1`
+(`runs/<run>.retry1-<attempt>.json`, and the same stem in `observations/`,
+`findings/` and `patches/`). `prs/` names the attempt that was published.
 
 Counts are never stored. The ladder and the metrics recompute them from
 these files, so concurrent writers cannot conflict.
@@ -209,6 +224,9 @@ learning:
 `verify` also reads `guarded_paths` and `test_roots`. This closes the `test/`
 gap: the sandbox keeps its tests in `test/`, and edits there were neither
 restored nor flagged.
+
+The retry switch sits at the top level of `factory.yaml`, outside
+`learning:`: `retry: {on_dod_fail: 1}` (0 turns it off).
 
 ## Signals
 
@@ -326,9 +344,14 @@ stubborn ticket cannot promote a rule on its own.
 
 ### Check proof
 
-The sample is the newest occurrence that has both a stored patch and an
-emittable line. An emittable line is TS/JS, Python or Dart, and its target is
-an area, not a package. Then all of these must pass:
+The plan carries up to three samples per check: distinct occurrences (by
+path and import line), newest first, each with a stored patch and an
+emittable line. An emittable line is TS/JS, Python or Dart, and its target
+is an area, not a package. `ladder.py apply` tries the samples in order. It
+moves to the next one when `emit_rule.py` cannot prove a sample (exit 1 or
+2, or a patch that fails validation), and stops when the rule would fire on
+`main` (exit 3) or an equivalent rule already exists. The sample that lands
+is the one recorded. For that sample, all of these must pass:
 
 1. `emit_rule.py` finds the line, verbatim, as an added line at that path and
    line of the stored patch. The patch's sha256 must match the observation.
@@ -339,6 +362,42 @@ an area, not a package. Then all of these must pass:
 The rule is `where: <from>/**` and `forbidden: [<to>/**]`, with
 `id: L-<8 hex>` and a fixed reason. If any step fails, the class falls back
 to a pattern, and the PR body says why.
+
+**The checker resolves imports.** `check_boundaries.py` fires a forbidden
+pattern when a token on an import line matches it, or when the import's
+target does. Targets are resolved lexically, with no file system access:
+
+- TS/JS: relative specifiers (`.`, `..`, `./x`, `../x`) against the
+  importing file's directory;
+- Python: `from M import a, b` gives `M/`, `M/a` and `M/b`; `import M` gives
+  `M/`; relative imports climb from the importing package; dots become `/`.
+
+A target that leaves the repository root is dropped. A target matches
+`src/db/**` when it lies under `src/db/` or is `src/db` itself. So
+`from "../db"`, `"../db/index"` and `from ..db import x` fire the rule,
+and `"../dbutils"` does not. Path aliases such as `@/db` stay unresolved,
+as in `observe`, which gives them no edge.
+
+**When `verify.sh` fails on the result** (step 4), `retro-plan` does not
+fail. It resets `repo/` and applies the same plan again with `ladder.py
+apply --verify-failed`:
+
+- every check becomes a pattern (reason `verify-fallback`); a check whose
+  class was already a pattern stays one;
+- every `test:` pattern is dropped, because its premise (the test passes on
+  `main`) is what `verify.sh` checks;
+- other patterns, retirements and suppressions are kept.
+
+Then `verify.sh` runs once more, even if no check is left, because the
+first failure may not have come from a check. If it passes, the retro PR
+is published with a "Demoted after verify failed" section. If it fails
+again, or nothing is left to apply, nothing is published and
+`retro-failed` records the plan under `retro/failed/`. `ladder.py plan`
+then reports that plan as unchanged until `main` moves or the proposed
+transitions or their samples change, so later learn runs do not fail the
+same way. To retry by hand, push to `main` or delete the record. Every
+check is demoted, not one: `verify.sh` does not say which fixture broke
+it.
 
 ### Templates
 
@@ -401,7 +460,9 @@ Further rules:
 
 1. computes the plan;
 2. runs `ladder.py apply`, which calls `emit_rule.py`;
-3. runs `scripts/verify.sh` when a check or a `test:` pattern changed;
+3. runs `scripts/verify.sh` when a check or a `test:` pattern changed, and
+   on a failure demotes the checks and runs it once more (see
+   [Check proof](#check-proof));
 4. runs `ladder.py guard`;
 5. uploads the patch.
 
@@ -472,7 +533,7 @@ missing-test and test.
   - `learned_check_catches`: hits by an `L-` rule after its promotion, on an
     issue outside its evidence.
   - `post_promotion_exposed_no_repeat`
-  - first-pass verify rate
+  - first-pass verify rate (the first attempt, before any retry)
   - test-tampering rate (`guarded:<test root>:modify|delete`)
   - merge rate within 30 days
   - cost per attempt and per merged PR (spec, build and learn spend)
@@ -527,32 +588,34 @@ missing-test and test.
 | Auto-merge | Three switches, set in three different places, plus `--match-head-commit` |
 | Triggers | Unchanged: `issues`, `issue_comment`, `workflow_dispatch`, `schedule`. PR heads are fetched as objects; jobs run only `git diff`, `git log` and `git show` on them |
 | The state branch | Only the App writes it, and files are create-only. Paths and sizes are checked. No job that runs code checks it out. Recommended: a ruleset that limits `cadence/state` and `cadence/retro` to the App |
-| Spend | Learn caps sit inside the global daily cap. The gate counts a running `classify` as in flight |
+| Spend | Learn caps sit inside the global daily cap. The gate counts a running `classify` as in flight, and a build whose retry was granted as two |
+| The DoD retry | It runs inside the run a human approved: no job dispatches a run, and `route.py` lets the App dispatch `spec` only. Only `format`, `lint`, `boundaries` and `test` failures are retried, once. `retry-gate` holds no secrets, waits in the gate's queue and checks two `per_run_usd` for the run against the daily cap before it grants. The failed step reaches the agent as a fixed word; the verify log as a cleaned, size-limited, credential-redacted file marked untrusted. `agent-retry` applies the first patch with git only, last before the agent, and leaves out `.claude/` and `.mcp.json`, which Claude Code loads as configuration |
+| A retro plan that fails `verify.sh` on every learn run | `retro-plan` demotes the checks and verifies once more. A plan that still fails is recorded by `retro-failed`, which holds the App token and runs git and jq only (no python, no `git apply`), create-only, from validated values |
 | Privacy | Authors are not stored, and there are no per-developer numbers. Comment text exists only in a 3-day artifact, and only when `classify` is on |
 
 ## Files
 
 | File | Change |
 |---|---|
-| `plugins/cadence/templates/tool/signals.py` | new: `observe`, `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config` |
-| `plugins/cadence/templates/tool/ladder.py` | new: `plan`, `apply`, `guard`, `pr-body` |
+| `plugins/cadence/templates/tool/signals.py` | new: `observe`, `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config`, `excerpt` |
+| `plugins/cadence/templates/tool/ladder.py` | new: `plan` (skips failed plans), `apply` (up to three samples; `--verify-failed`), `guard`, `pr-body` |
 | `plugins/cadence/templates/tool/metrics.py` | new: `report`, `compare` |
 | `plugins/cadence/templates/tool/emit_rule.py` | provenance, `--must-pass-root`, `--rule-id`, `--retire`, `--replay`, `--json`, text-preserving apply, input hardening |
-| `plugins/cadence/templates/tool/check_boundaries.py` | rule ids; `paths=`; relative skip dirs; skips `tests/fixtures/retro/` and symlinks |
-| `plugins/cadence/templates/tool/ledger.py` | `--stage`, `--pr`, `--published-sha`, `--base-sha`, `check --pool learn`, `load_learning()` |
+| `plugins/cadence/templates/tool/check_boundaries.py` | rule ids; `paths=`; relative skip dirs; skips `tests/fixtures/retro/` and symlinks; resolves relative TS/JS and Python imports |
+| `plugins/cadence/templates/tool/ledger.py` | `--stage`, `--pr`, `--published-sha`, `--base-sha`, `check --pool learn`, `load_learning()`, `retry.on_dod_fail` |
 | `plugins/cadence/templates/tool/reconcile.py` | runs titled `#sweep` and `#learn` name no issue |
 | `plugins/cadence/schemas/retro.schema.json` | `factory` object; stricter `violation_sample` |
 | `plugins/cadence/schemas/observation.schema.json` | new |
 | `plugins/cadence/schemas/classify.schema.json` | new |
 | `plugins/cadence/schemas/lessons.schema.json` | new |
-| `plugins/cadence/schemas/retro-plan.schema.json` | new |
+| `plugins/cadence/schemas/retro-plan.schema.json` | new; reason `verify-fallback`, optional `alternates` |
 | `plugins/cadence/schemas/metrics.schema.json` | new |
 | `plugins/cadence/schemas/cadence-yaml.schema.json` | optional boundary `id` |
 | `plugins/cadence/skills/cadence-findings/SKILL.md` | new: read-only classifier |
 | `plugins/cadence/skills/cadence-retro/SKILL.md` | factory mode |
 | `plugins/cadence/skills/cadence-intake/SKILL.md` | reads `lessons.yaml` |
-| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above |
-| `plugins/cadence/templates/factory.yaml.tmpl` | `learning:` block |
+| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; every action pinned to a SHA |
+| `plugins/cadence/templates/factory.yaml.tmpl` | `learning:` and `retry:` blocks |
 | `plugins/cadence/templates/docs/PATTERNS.md.tmpl` | learned section |
 
 ## Open questions
@@ -579,3 +642,7 @@ missing-test and test.
   due.
 - **Classify retries.** Items skipped because of the budget are not retried
   in v1.
+- **Verify failures are not attributed.** When `verify.sh` fails on a retro
+  result, every check in the plan is demoted, not only the one that broke
+  it, because the log does not say which fixture did. Finding it would take
+  one `verify.sh` run per check.

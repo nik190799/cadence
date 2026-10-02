@@ -5,10 +5,10 @@ title: Factory mode
 
 # Factory mode
 
-> **Status: phase 1a ran live; the learning loop (phase 1b) is wired, not
-> yet run live.** The first live runs are in a private sandbox repo
-> ([setup](factory-sandbox-setup.md)); the learning loop is specified in
-> [LEARNING.md](LEARNING.md).
+> **Status: phase 1a ran live; the learning loop (phase 1b) is wired and
+> smoke-tested live, not yet shown end to end.** The first live runs are in
+> a private sandbox repo ([setup](factory-sandbox-setup.md)); the learning
+> loop is specified in [LEARNING.md](LEARNING.md).
 > Work happens on the `factory` branch. Nothing here ships until the phase 1 gate on
 > 2026-11-13. The full reasoning, research and sources live in the
 > [Cadence Factory decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
@@ -33,6 +33,7 @@ or model.
 | Spec, then `/approve` from a user with write access | `cadence-intake` skill | A human gate |
 | Agent job builds the change | `claude-code-action` on the user's runner | No push token; uploads its diff as an artifact |
 | Verify job | Fresh checkout; tests and `.cadence/` restored from the base branch | No secrets; runs `verify.sh` |
+| One retry, if verify failed at format, lint, boundaries or test | The same run: the agent again from its first patch, then verify again | The same approval, claim and caps; the daily budget is checked first |
 | Publish job | Fresh checkout | A freshly minted GitHub App token; opens the draft PR |
 | Human merge | GitHub | A human gate |
 
@@ -74,50 +75,63 @@ plugins/cadence/                       ships to users
   schemas/                             observation, classify, lessons, retro-plan, metrics
                                        (new); retro and cadence-yaml (extended)
   templates/.github/workflows/
-    cadence-factory.yml.tmpl           route → gate → intake / agent → verify → observe → publish,
-                                       ledger, release, reconcile; learn chain harvest →
-                                       classify → learn-record → retro-plan → retro-publish
-  templates/factory.yaml.tmpl          budget, max_turns, autonomy, learning (done)
+    cadence-factory.yml.tmpl           route → gate → intake / agent → verify → observe →
+                                       (retry-gate → agent-retry → verify-retry → observe-retry)
+                                       → publish, ledger, release, reconcile; learn chain
+                                       harvest → classify → learn-record → retro-plan →
+                                       retro-publish or retro-failed. Every action pinned to a SHA
+    cadence.yml.tmpl                   the CI template: contents read, actions pinned to a SHA
+  templates/factory.yaml.tmpl          budget, max_turns, retry, autonomy, learning (done)
   templates/tool/
     route.py                           event → stage, deterministic       (done, tested)
     intake_sanitize.py                 issue → clean, untrusted-marked file (done, tested)
-    ledger.py                          cost caps (build and learn pools) and run log (done, tested)
+    ledger.py                          cost caps (build and learn pools), retry switch, run log (done, tested)
     claim.py                           ref-claim lock per issue           (done, tested)
     reconcile.py                       hourly sweep for stuck work        (done, tested)
-    signals.py                         observe, finalize, put, due, harvest, apply-classified, config
-    ladder.py                          note → pattern → check: plan, apply, guard, pr-body
+    signals.py                         observe, finalize, put, due, harvest, apply-classified, config,
+                                       excerpt (the verify log for the retry)
+    ladder.py                          note → pattern → check: plan, apply (--verify-failed), guard, pr-body
     metrics.py                         repeat and escape rates: report, compare
     emit_rule.py                       proves a check fires on its real sample (extended)
-    check_boundaries.py                the boundary checker (rule ids, paths=, skips retro fixtures)
+    check_boundaries.py                the boundary checker (rule ids, paths=, skips retro fixtures,
+                                       resolves relative TS/JS and Python imports)
 eval/                                  internal replay harness; never ships
 docs/FACTORY.md                        this page
 docs/LEARNING.md                       the learning loop: signals, ladder, metrics, security
+docs/factory-auth.md                   research: OIDC workload identity instead of the stored API key
 docs/factory-sandbox-setup.md          GitHub App, secrets and labels for the sandbox
 ```
 
-### Wiring (2026-10-01)
+### Wiring (2026-10-02)
 
 The workflow template calls every tool. The build path (route to release)
 ran live in the sandbox on 2026-10-01; the learning-loop jobs
-([LEARNING.md](LEARNING.md)) are wired and have not run on GitHub yet.
+([LEARNING.md](LEARNING.md)) ran live as a smoke test on 2026-10-02. The
+retry jobs and `retro-failed` are wired and tested offline, not yet run on
+GitHub.
 
 | Job | Runs when | Tokens | Does |
 |---|---|---|---|
-| `route` | a `factory` label, an `/approve` comment, or a dispatch | `GITHUB_TOKEN`: contents read | Looks up the sender's permission; `route.py` picks `spec`, `build` or `none`; reads the caps from `factory.yaml` |
-| `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec, counts runs already spending, `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
+| `route` | a `factory` label, an `/approve` comment, or a dispatch | `GITHUB_TOKEN`: contents read | Looks up the sender's permission; `route.py` picks `spec`, `build` or `none`; reads the caps and `retry.on_dod_fail` from `factory.yaml` |
+| `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec, counts the slots already spending (a build whose retry was granted holds two), `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
 | `intake` | spec | `GITHUB_TOKEN`: contents and issues read; `ANTHROPIC_API_KEY` | Sanitizes the issue; the `cadence-intake` skill writes one file and nothing else |
 | `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; uploads `change.patch` and the cost result |
 | `verify` | the agent finished | contents read, no secrets | Reads `learning.guarded_paths` and `learning.test_roots` with the base tools before the patch (`.github/`, `.cadence/`, `scripts/` and `tool/` are always guarded), applies the patch to the base commit, restores the guarded paths and leaves out new files there (except under the test roots, `tests/` and `test/` by default), records the tree it tests, runs `verify.sh`. A patch that touches `.github/workflows/` fails |
 | `observe` | build past the gate, the agent ran (whatever verify said) | contents read, no secrets | Applies the patch to a scratch worktree of the base and only reads it (`python -I`, base tools and config): import edges and rule hits on added lines, guarded operations, missing tests, failing tests and the gate step from the verify log. The observation and findings leave as a job output (`signals.py observe`) |
-| `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write, checks write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or pushes `cadence/issue-N`, posts the `cadence/verify` check on that commit and opens a draft PR (`pr-open`), or labels `dod-failed` / `needs-human` with the reason |
-| `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch; for builds, checks observe's bundle (sha256, schemas: `signals.py finalize`) and books `observations/`, `findings/`, `patches/` and `prs/`, create-only (`signals.py put`) |
-| `release` | always, when the gate took the claim | App token | `claim.py release` |
+| `retry-gate` | verify failed and `retry.on_dod_fail` is 1 | `GITHUB_TOKEN`: actions and contents read, no secrets | Waits in the gate's queue. Maps verify's failed step to a fixed word: only `format`, `lint`, `boundaries` and `test` are retried (never `apply`, `policy`, a config error, an empty patch or a timeout). Counts the slots in flight with this run included, then `ledger.py check`: one more `per_run_usd` must fit the daily cap. Writes a cleaned, size-limited excerpt of the verify log with the base tools (`signals.py excerpt`). Its last step, "Grant the retry", is what the in-flight count sees |
+| `agent-retry` | the retry was granted | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | The agent job once more, with the same tools and caps: applies the first patch (with git only, last before the agent, leaving out `.claude/` and `.mcp.json`), and gets the failed step and the excerpt as untrusted data. Uploads `change-retry` and its cost result |
+| `verify-retry` | the retry agent finished | contents read, no secrets | The verify job's steps, byte for byte, on the retry's patch; records the tree it tests |
+| `observe-retry` | the retry agent ran | contents read, no secrets | observe's steps on the retry, under the run id `<run>.retry1` |
+| `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write, checks write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or picks the attempt that passed (the first, else the retry), pushes `cadence/issue-N`, posts the `cadence/verify` check for that attempt's tree and opens a draft PR (`pr-open`; the body gives the cost of both attempts and says when the retry passed), or labels `dod-failed` / `needs-human` with the failed step and one fixed sentence about the retry |
+| `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch, the retry as its own record (`<run>.retry1`); for builds, checks both observers' bundles (sha256, schemas: `signals.py finalize`) and books `observations/`, `findings/`, `patches/` and `prs/`, create-only (`signals.py put`). The PR is booked on the attempt that was published |
+| `release` | always, when the gate took the claim, after every retry job | App token | `claim.py release` |
 | `reconcile` | hourly schedule | App token | `reconcile.py`; then `signals.py due` says whether the learn chain runs |
 | `harvest` | hourly when due, or a dispatch with `stage=learn` | `GITHUB_TOKEN`: contents, pull requests, issues and actions read | Reads closed factory PRs (PR heads fetched as objects, never checked out): the human's edits, `/cadence-forbid` and `/cadence-class`, review comments from users with write access. Checks the learn budget (`ledger.py check --pool learn`) |
 | `classify` | only if `learning.classify` is on and the learn budget allows | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | The `cadence-findings` skill labels review comments with enums; no shell, one output file |
 | `learn-record` | after harvest | App token | Checks the labels (`signals.py apply-classified`), books post-PR findings, harvest and decision markers, the learn marker, classify's spend and the daily metrics snapshot on `cadence/state` |
-| `retro-plan` | after learn-record | `GITHUB_TOKEN`: contents and pull requests read, no secrets | `ladder.py plan` and `apply` (which calls `emit_rule.py`), `verify.sh` when a check changed, `ladder.py guard`; uploads the retro patch, plan and PR body. One retro queue (`cadence-factory-retro`) |
+| `retro-plan` | after learn-record | `GITHUB_TOKEN`: contents and pull requests read, no secrets | `ladder.py plan` and `apply` (which calls `emit_rule.py`), `verify.sh` when a check changed, `ladder.py guard`; uploads the retro patch, plan and PR body. A failing `verify.sh` never fails it: it demotes the plan's checks (`ladder.py apply --verify-failed`) and runs `verify.sh` once more; a plan that still fails is not published. One retro queue (`cadence-factory-retro`) |
 | `retro-publish` | the plan changed | App token (contents, pull requests) | `ladder.py guard` again on the patch, then git and gh only: force-pushes `cadence/retro` with a lease (never over a human's push) and opens or updates one non-draft PR. Merges only in an eval sandbox (`mode: eval-sandbox`, `CADENCE_EVAL_SANDBOX`, private repo) |
+| `retro-failed` | retro-plan gave up on a plan | App token (contents) | Git and jq only: records `retro/failed/<plan_sha>.json` on `cadence/state`, create-only, so later learn runs skip that plan until `main` or the plan changes |
 
 **Labels are one state at a time:** `factory` (a human adds it) →
 `spec-ready` → `building` → `pr-open`, or `dod-failed` / `needs-human`.
@@ -173,15 +187,41 @@ Closed from the review of the first factory PR (2026-10-02):
   branch later gets no `cadence/verify` check, so do not make it a
   required status check: the repo's own CI covers those commits.
 
+Closed from the review of the learning loop, and hardening (2026-10-02):
+
+- **A retro result that fails `verify.sh`** no longer fails `retro-plan`
+  (which failed every later learn run the same way). Every check in the
+  plan is demoted to a pattern (a check whose class was a pattern stays
+  one, and `test:` patterns are dropped, since `verify.sh` is what proves
+  them), the plan is applied again and `verify.sh` runs once more. The PR
+  body says what was demoted and why. A plan that still fails is recorded
+  by `retro-failed` under `retro/failed/` on `cadence/state` and skipped
+  until `main` or the plan changes; push to `main` or delete the record to
+  retry it by hand.
+- **Directory-index imports.** `check_boundaries.py` now also resolves
+  relative TS/JS imports and Python imports to a repo path, so
+  `from "../db"` fires a rule on `src/db/**` (and `../dbutils` does not).
+  A check is proven on up to three samples, newest first.
+- **One retry on a failed gate** (`retry.on_dod_fail`, default 1). It runs
+  inside the same run, not as a new dispatch: `route.py` lets the App
+  dispatch `spec` only, so every job that mints the App token, the hourly
+  reconciler included, would otherwise gain a way to start a paid build
+  nobody approved. The retry keeps the same `/approve`, spec and claim,
+  and `retry-gate` checks the worst case (two `per_run_usd` for this run)
+  in the gate's queue before it spends. Both attempts are observed and
+  booked; the retry under the run id `<run>.retry1`.
+- **Every action is pinned** to a full commit SHA, with the tag as a
+  comment, in both workflow templates; `cadence.yml.tmpl` has
+  `permissions: contents: read`.
+
 Still to do:
 
-- **Pin every action to a full commit SHA** before enabling anywhere but
-  the sandbox (CICD_PLAN). The template uses major tags.
 - **Run it live** in the sandbox: spec, approve, build, PR ran on
   2026-10-01; still to see live: a budget refusal, a held claim, a
-  cancelled run and a re-run.
-- **DoD retry.** v1 labels `dod-failed` and stops; one retry that feeds the
-  failure back to the agent is planned.
+  cancelled run, a re-run, the DoD retry and a demoted retro plan.
+- **Auth.** The model jobs hold a stored `ANTHROPIC_API_KEY`.
+  [factory-auth.md](factory-auth.md) looks at whether GitHub Actions OIDC
+  can replace it.
 - **Intake is booked but not budget-checked.** Each intake run is bounded
   by `budget.per_run_usd`; decide whether it goes through `gate`.
 - **The gate is not a sandbox.** Guarded paths are restored, but agent code
@@ -202,6 +242,9 @@ Still to do:
   Cadence never resells, proxies or pays for model usage.
 - The agent job never holds a push token. Tests, CI config and
   `.cadence/` are restored from the base branch before the gate runs.
+- Only a human starts a build: an `/approve`, or a `stage=build` dispatch
+  by a user with write access. No job dispatches one, and the one
+  automatic retry runs inside the run that human started.
 - No trigger runs code from a PR head (no `pull_request`,
   `pull_request_target` or `workflow_run`). Closed PRs are read by the
   hourly sweep or a `stage=learn` dispatch, as objects.
