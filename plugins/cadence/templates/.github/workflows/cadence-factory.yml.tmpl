@@ -444,6 +444,18 @@ jobs:
       # No shell, no web, no MCP. The runner's file-command directory (where
       # GITHUB_ENV lives) and /proc (environment variables) are denied
       # explicitly on top.
+      - name: Install bubblewrap (sandbox for env scrubbing)
+        # Claude Code isolates tool subprocesses with bubblewrap so the API key
+        # never reaches them. GitHub's Ubuntu 24.04 runners ship without it and
+        # restrict unprivileged user namespaces through AppArmor, which bwrap
+        # needs; lift that restriction on this throwaway runner only.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+          echo "bubblewrap works"
+
       - name: Write the spec
         id: claude
         uses: anthropics/claude-code-action@v1
@@ -551,6 +563,18 @@ jobs:
           git -C "$dest" checkout --quiet FETCH_HEAD
           echo "Cadence plugin at $(git -C "$dest" rev-parse HEAD) ($PLUGIN_REF)"
           mkdir -p "$RUNNER_TEMP/cadence/output"
+
+      - name: Install bubblewrap (sandbox for env scrubbing)
+        # Claude Code isolates tool subprocesses with bubblewrap so the API key
+        # never reaches them. GitHub's Ubuntu 24.04 runners ship without it and
+        # restrict unprivileged user namespaces through AppArmor, which bwrap
+        # needs; lift that restriction on this throwaway runner only.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --dev /dev --proc /proc true
+          echo "bubblewrap works"
 
       - name: Run the agent team
         id: claude
