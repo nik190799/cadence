@@ -2342,7 +2342,10 @@ jobs:
       # ---------------------------------------------------------------
       # Add your stack's runtime setup here, as in .github/workflows/cadence.yml
       # (setup-node, setup-go, ...), so scripts/verify.sh can run when the
-      # plan adds a check or a test: pattern. Same as in the verify job.
+      # plan adds a check or a test: pattern. Unlike the verify job, this job
+      # checks the repository out under repo/, so point the setup there, e.g.
+      # setup-node with `cache-dependency-path: repo/package-lock.json`, and
+      # `npm ci` with `working-directory: repo` (seen live, 2026-10-02).
       # ---------------------------------------------------------------
 
       - name: Apply the plan
