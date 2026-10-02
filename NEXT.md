@@ -57,9 +57,22 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
    2026-10-01, despite medium trademark risk from Cadence Design Systems).
    Submission-doc fixes and a `plugins/cadence/README.md` are prepared locally on
    `chore/directory-prep`, unpushed, to ship as the first update after approval.
-3. **Start phase 1a, the infra spine:** per-user GitHub App identity with loop
-   guards, the agent/verify/publish job split, `claim.py`, and `ledger.py` with a
-   hard cap. Specs are in each stub's docstring.
+3. ~~**Start phase 1a, the infra spine.**~~ **Done 2026-10-01; gate passed two
+   weeks early.** First unattended end-to-end run in `nik190799/cadence-eval-sandbox`:
+   issue #1 -> spec ($0.23, 12 turns) -> human `/approve` -> build ($0.21, 16 turns)
+   -> verify green -> draft PR #2, claim released, ledger booked. The one live
+   bug (bubblewrap missing on Ubuntu 24.04 runners) is fixed in `f71c6e0`.
+   Sandbox App: `cadence-factory-nik190799`, App ID 5157542, installed on the
+   sandbox only. Setup guide: `docs/factory-sandbox-setup.md`.
+
+## Next (phase 1b, from 2026-10-02)
+
+1. **Learning ladder:** retro findings from runs -> notes/patterns -> a check that
+   must fire on its sample, delivered as a PR to `.cadence/`.
+2. **One retry on a failed gate,** feeding the verify log back to the agent
+   (TODO in the publish job).
+3. **Hardening before any real repo:** pin every action to a commit SHA; research
+   Anthropic identity federation for GitHub Actions to replace the stored API key.
 
 ## Kill criteria (2026-11-13)
 
