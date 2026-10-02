@@ -54,3 +54,9 @@ build/
 
 # Logs
 *.log
+
+# Credentials: never commit private keys or certificates
+*.pem
+*.key
+*.p12
+*.pfx
