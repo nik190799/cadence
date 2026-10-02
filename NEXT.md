@@ -149,6 +149,13 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 
 **2026-10-02 sandbox:** hardening installed (`a1e16fd`); sweep and learn smoke runs green with every action pinned; the DoD retry is not yet proven live.
 
+**2026-10-02, later:**
+- Sandbox PR #9 (issue #8, the build that followed L-f356387a) reviewed and merged (`cebd221`).
+- `lessons_cited` (`d001039`) installed in the sandbox (`dd2932a`); learn smoke green; metrics unchanged.
+- DoD retry, decline path proven live: issue #10 asked for a change to an existing (guarded) test. The intake warned the approver; approved anyway, the agent changed nothing and explained why, the gate failed at `empty`, and retry-gate declined (empty is not retryable) with the reason on the issue. Cost $0.34. The grant path (agent-retry, verify-retry) is still unproven: next test is a fixture the sandbox's `.gitignore` (`*.log`) keeps out of the patch, run after the UTC daily cap resets.
+- Rulesets for `cadence/state` and `cadence/retro`: GitHub refuses them on a private repo without GitHub Pro (HTTP 403). Not set.
+- Code-of-conduct contact (the maintainer's email) committed on `chore/directory-prep` (`4a1a9bd`, local, ships with the release).
+
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
