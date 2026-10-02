@@ -74,9 +74,12 @@ which has passed tests and an offline simulation but has not run on GitHub.
    metrics. 1146 tests; offline simulation 46/46; adversarial review found no
    blocker. **Next: the live demo** in the sandbox (plant a `src/db` layer and
    three issues whose natural fix imports it from `src/http`; the third should be
-   caught by a learned rule). Before it: copy this branch's workflow and tools to
-   the sandbox, add `__pycache__/` to its `.gitignore`, and give `retro-plan` the
-   sandbox's setup-node and `npm ci`. Review follow-ups:
+   caught by a learned rule). **Installed in the sandbox and smoke-tested
+   2026-10-02** (sandbox `993ee0e`, `e1a6d23`): the sweep reported PR #2 as due,
+   learn runs 36971373021 and 36971546373 harvested it once (`no-record`: it
+   predates the loop), booked learn records and metrics, and planned 0
+   transitions with retro-publish skipped. One live fix: `retro-plan` checks out
+   under `repo/`, so its runtime setup must point there. Review follow-ups:
    - a retro result that fails `verify.sh` fails retro-plan with no PR, and every
      later learn run fails the same way (should fall back to a pattern);
    - a directory-index import (`from "../db"`) gets the right class but no check,
