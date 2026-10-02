@@ -54,6 +54,8 @@ build/
 
 # Logs
 *.log
+# ...except test fixtures, which are inputs to the tests
+!tests/fixtures/**/*.log
 
 # Credentials: never commit private keys or certificates
 *.pem

@@ -18,6 +18,14 @@ Config (``--config``, default ``.cadence/factory.yaml``)::
     Both budget numbers must be present, finite and > 0, and
     ``per_run_usd <= daily_usd``. Anything else exits 2.
 
+    An optional ``learning:`` block configures the learning loop (see
+    docs/LEARNING.md); ``load_learning()`` returns it with defaults
+    applied, and an invalid value exits 2 here too. Its ``budget``
+    (``per_run_usd``, default 0.25, and ``daily_usd``, default
+    min(1.00, budget.daily_usd)) caps the learn steps' model spend, inside
+    the global daily cap: ``0 < per_run_usd <= daily_usd <=
+    budget.daily_usd``.
+
 Records (``--records-dir``, default ``.cadence/runs``):
     One JSON file per run attempt, ``<run_id>-<run_attempt>.json``,
     created with exclusive create so a record is never overwritten. Each
@@ -25,7 +33,10 @@ Records (``--records-dir``, default ``.cadence/runs``):
     (number or null), booked_usd, cost_source ("reported" or "cap"),
     num_turns (or null), per_run_cap_usd, recorded_at (ISO 8601 UTC,
     whole seconds) and, only when a reported cost exceeds the cap,
-    ``"over_cap": true``.
+    ``"over_cap": true``. ``--stage``, ``--pr``, ``--published-sha`` and
+    ``--base-sha`` add ``stage``, ``pr``, ``published_sha`` and
+    ``base_sha``, each only when given. A ``--stage learn`` record names no
+    issue: ``"issue": null``.
 
 Contract:
     record  After every run attempt (success, failure, cancel or
@@ -34,8 +45,10 @@ Contract:
             JSON object, a JSON array of messages, or a JSON-lines
             stream. The LAST object carrying ``total_cost_usd`` wins.
             Missing or corrupt files are tolerated. A run with no known
-            cost is booked at the full per-run cap, never at zero. A
-            reported cost above the cap is booked as reported.
+            cost is booked at the full per-run cap, never at zero (for a
+            ``--stage learn`` record, ``learning.budget.per_run_usd``,
+            the cap its model step ran under). A reported cost above the
+            cap is booked as reported.
     check   Before dispatching a run, print
             ``{spent_today, in_flight, per_run_usd, daily_usd,
             worst_case, allowed, unreadable}`` where
@@ -46,6 +59,15 @@ Contract:
             record that cannot be read or lacks a valid ``booked_usd`` or
             ``recorded_at`` is counted in ``unreadable`` and booked at the
             full per-run cap on every day until a human repairs it.
+            ``--pool learn`` asks for one learn step instead:
+            ``worst_case = spent_today + in_flight * per_run_usd +
+            learning.per_run_usd``, and it is allowed only if that is
+            within ``budget.daily_usd`` AND ``learn_spent_today +
+            learning.per_run_usd <= learning.daily_usd``, where
+            ``learn_spent_today`` sums today's records with ``"stage":
+            "learn"``. The report then adds ``pool``,
+            ``learn_spent_today``, ``learn_per_run_usd`` and
+            ``learn_daily_usd``.
 
 Exit codes:
     0   ok (record written; check allows one more run)
@@ -60,6 +82,9 @@ Usage:
         --outcome success --dod pass --result-json claude-result.json
     python tool/ledger.py record --run-id 123 --run-attempt 2 --issue 42 \\
         --outcome timeout
+    python tool/ledger.py record --stage learn --run-id 130 --run-attempt 1 \\
+        --outcome success --dod skipped --result-json claude-result.json
+    python tool/ledger.py check --pool learn --in-flight 1
     python tool/ledger.py --config .cadence/factory.yaml \\
         --records-dir .cadence/runs check --now 1790000000
 
@@ -78,7 +103,7 @@ import re
 import sys
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -99,6 +124,37 @@ DEFAULT_RECORDS_DIR = Path(".cadence") / "runs"
 
 OUTCOMES: tuple[str, ...] = ("success", "failure", "cancelled", "timeout")
 DOD_RESULTS: tuple[str, ...] = ("pass", "fail", "skipped", "unknown")
+STAGES: tuple[str, ...] = ("spec", "build", "learn")
+POOLS: tuple[str, ...] = ("build", "learn")
+STAGE_LEARN = "learn"
+
+LEARNING_MODES: tuple[str, ...] = ("observe", "on", "eval-sandbox")
+DEFAULT_GUARDED_PATHS: tuple[str, ...] = (
+    "tests",
+    "test",
+    ".github",
+    ".cadence",
+    "scripts",
+    "tool",
+)
+DEFAULT_TEST_ROOTS: tuple[str, ...] = ("tests", "test")
+DEFAULT_TEST_GLOBS: tuple[str, ...] = (
+    "tests/**",
+    "test/**",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/*_test.go",
+)
+DEFAULT_EDIT_IGNORE: tuple[str, ...] = (
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "**/*.snap",
+)
+DEFAULT_LEARN_PER_RUN_USD = 0.25
+DEFAULT_LEARN_DAILY_USD = 1.00
 
 EXIT_OK = 0
 EXIT_BLOCKED = 1
@@ -107,6 +163,12 @@ EXIT_BAD_INPUT = 2
 # Run ids become file names, so keep them to a path-safe alphabet. Always
 # used with fullmatch: ``$`` would also accept a trailing newline.
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_SHA40_RE = re.compile(r"[0-9a-f]{40}")
+# A guarded root is one path segment; it ends up in shell loops and globs.
+_GUARDED_ROOT_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+_MODEL_RE = re.compile(r"[A-Za-z0-9._:-]{0,100}")
+_GLOB_RE = re.compile(r"[^\x00-\x1f\x7f]{1,200}")
+_MAX_GLOBS = 50
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
@@ -119,11 +181,49 @@ class DuplicateRecord(Exception):
 
 
 @dataclass(frozen=True)
+class LearningConfig:
+    """The ``learning:`` block of factory.yaml, with defaults applied.
+
+    See docs/LEARNING.md ("Config"). ``per_run_usd`` and ``daily_usd`` come
+    from ``learning.budget``.
+    """
+
+    mode: str = "on"
+    promote_after: int = 2
+    window_attempts: int = 50
+    window_days: int = 60
+    repeat_window: int = 10
+    area_depth: int = 2
+    max_checks_per_pr: int = 3
+    max_patterns_per_pr: int = 5
+    max_retirements_per_pr: int = 5
+    max_active_patterns: int = 25
+    retire_dormant: bool = False
+    guarded_paths: tuple[str, ...] = DEFAULT_GUARDED_PATHS
+    test_roots: tuple[str, ...] = DEFAULT_TEST_ROOTS
+    test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
+    edit_ignore: tuple[str, ...] = DEFAULT_EDIT_IGNORE
+    harvest_since_days: int = 30
+    harvest_max_prs: int = 10
+    settle_minutes: int = 10
+    classify: bool = False
+    model: str = ""
+    per_run_usd: float = DEFAULT_LEARN_PER_RUN_USD
+    daily_usd: float = DEFAULT_LEARN_DAILY_USD
+
+    @property
+    def classify_effective(self) -> bool:
+        """Model labels run only when asked for, and never in eval-sandbox."""
+        return self.classify and self.mode != "eval-sandbox"
+
+
+@dataclass(frozen=True)
 class Config:
     per_run_usd: float
     daily_usd: float
     max_turns: int | None
     autonomy: str | None
+    learning: LearningConfig = field(default_factory=LearningConfig)
 
 
 @dataclass(frozen=True)
@@ -237,12 +337,218 @@ def validate_config(raw: Any, source: str = "factory.yaml") -> Config:
         )
 
     autonomy = raw.get("autonomy")
+    learning = parse_learning(raw.get("learning"), numbers["daily_usd"], source)
     return Config(
         per_run_usd=numbers["per_run_usd"],
         daily_usd=numbers["daily_usd"],
         max_turns=max_turns,
         autonomy=None if autonomy is None else str(autonomy),
+        learning=learning,
     )
+
+
+_LEARNING_KEYS = frozenset(
+    {
+        "mode",
+        "promote_after",
+        "window_attempts",
+        "window_days",
+        "repeat_window",
+        "area_depth",
+        "max_checks_per_pr",
+        "max_patterns_per_pr",
+        "max_retirements_per_pr",
+        "max_active_patterns",
+        "retire_dormant",
+        "guarded_paths",
+        "test_roots",
+        "test_globs",
+        "edit_ignore",
+        "harvest_since_days",
+        "harvest_max_prs",
+        "settle_minutes",
+        "classify",
+        "model",
+        "budget",
+    }
+)
+
+# key -> (default, minimum, maximum or None)
+_LEARNING_INTS: dict[str, tuple[int, int, int | None]] = {
+    "promote_after": (2, 1, None),
+    "window_attempts": (50, 1, None),
+    "window_days": (60, 1, None),
+    "repeat_window": (10, 0, None),
+    "area_depth": (2, 1, 4),
+    "max_checks_per_pr": (3, 0, None),
+    "max_patterns_per_pr": (5, 0, None),
+    "max_retirements_per_pr": (5, 0, None),
+    "max_active_patterns": (25, 0, None),
+    "harvest_since_days": (30, 1, None),
+    "harvest_max_prs": (10, 0, None),
+    "settle_minutes": (10, 0, None),
+}
+
+
+def _learning_mode(value: Any, where: str) -> str:
+    # YAML 1.1 (PyYAML) reads a bare `on` as the boolean true.
+    if value is True:
+        return "on"
+    if isinstance(value, str) and value in LEARNING_MODES:
+        return value
+    raise LedgerError(
+        f"{where}.mode must be one of {', '.join(LEARNING_MODES)} (got {value!r})"
+    )
+
+
+def _learning_bool(raw: dict[str, Any], key: str, where: str) -> bool:
+    value = raw.get(key, False)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise LedgerError(f"{where}.{key} must be true or false (got {value!r})")
+    return value
+
+
+def _learning_strings(
+    raw: dict[str, Any],
+    key: str,
+    default: tuple[str, ...],
+    pattern: re.Pattern[str],
+    where: str,
+) -> tuple[str, ...]:
+    if key not in raw or raw[key] is None:
+        return default
+    value = raw[key]
+    if not isinstance(value, list) or len(value) > _MAX_GLOBS:
+        raise LedgerError(
+            f"{where}.{key} must be a list of at most {_MAX_GLOBS} strings"
+        )
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not pattern.fullmatch(item):
+            raise LedgerError(f"{where}.{key} has an invalid entry {item!r}")
+        if item not in out:
+            out.append(item)
+    return tuple(out)
+
+
+def _learning_money(budget: dict[str, Any], key: str, where: str) -> float | None:
+    if key not in budget or budget[key] is None:
+        return None
+    value = budget[key]
+    if not _is_number(value) or value <= 0:
+        raise LedgerError(
+            f"{where}.budget.{key} must be a number of US dollars > 0 (got {value!r})"
+        )
+    return float(value)
+
+
+def parse_learning(
+    raw: Any, budget_daily_usd: float, source: str = "factory.yaml"
+) -> LearningConfig:
+    """The validated ``learning:`` block; defaults for every missing key.
+
+    Raises LedgerError naming the first invalid value.
+    """
+    where = f"{source}: learning"
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise LedgerError(f"{where} must be a mapping")
+    unknown = sorted(str(key) for key in raw if key not in _LEARNING_KEYS)
+    if unknown:
+        raise LedgerError(f"{where} has unknown keys: {', '.join(unknown)}")
+
+    ints: dict[str, int] = {}
+    for key, (default, low, high) in _LEARNING_INTS.items():
+        value = raw.get(key, default)
+        if value is None:
+            value = default
+        if not _is_count(value) or value < low or (high is not None and value > high):
+            bound = f"between {low} and {high}" if high is not None else f">= {low}"
+            raise LedgerError(
+                f"{where}.{key} must be a whole number {bound} (got {value!r})"
+            )
+        ints[key] = value
+
+    mode = _learning_mode(raw.get("mode", "on"), where)
+
+    guarded = _learning_strings(
+        raw, "guarded_paths", DEFAULT_GUARDED_PATHS, _GUARDED_ROOT_RE, where
+    )
+    if any(root in (".", "..") for root in guarded):
+        raise LedgerError(f"{where}.guarded_paths may not contain '.' or '..'")
+    default_roots = tuple(root for root in DEFAULT_TEST_ROOTS if root in guarded)
+    test_roots = _learning_strings(
+        raw, "test_roots", default_roots, _GUARDED_ROOT_RE, where
+    )
+    stray = [root for root in test_roots if root not in guarded]
+    if stray:
+        raise LedgerError(
+            f"{where}.test_roots must be a subset of guarded_paths (not: "
+            f"{', '.join(stray)})"
+        )
+    test_globs = _learning_strings(raw, "test_globs", DEFAULT_TEST_GLOBS, _GLOB_RE, where)
+    edit_ignore = _learning_strings(
+        raw, "edit_ignore", DEFAULT_EDIT_IGNORE, _GLOB_RE, where
+    )
+
+    model = raw.get("model", "")
+    if model is None:
+        model = ""
+    if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
+        raise LedgerError(
+            f"{where}.model must match [A-Za-z0-9._:-]{{0,100}} (got {model!r})"
+        )
+
+    budget = raw.get("budget")
+    if budget is None:
+        budget = {}
+    if not isinstance(budget, dict):
+        raise LedgerError(f"{where}.budget must be a mapping")
+    stray_budget = sorted(str(k) for k in budget if k not in ("per_run_usd", "daily_usd"))
+    if stray_budget:
+        raise LedgerError(f"{where}.budget has unknown keys: {', '.join(stray_budget)}")
+    daily = _learning_money(budget, "daily_usd", where)
+    per_run = _learning_money(budget, "per_run_usd", where)
+    if daily is None:
+        daily = min(DEFAULT_LEARN_DAILY_USD, budget_daily_usd)
+    if per_run is None:
+        per_run = min(DEFAULT_LEARN_PER_RUN_USD, daily)
+    if per_run > daily:
+        raise LedgerError(
+            f"{where}.budget.per_run_usd ({per_run}) must not exceed "
+            f"learning.budget.daily_usd ({daily})"
+        )
+    if daily > budget_daily_usd:
+        raise LedgerError(
+            f"{where}.budget.daily_usd ({daily}) must not exceed budget.daily_usd "
+            f"({budget_daily_usd}); learn spend counts inside the global cap"
+        )
+
+    return LearningConfig(
+        mode=mode,
+        retire_dormant=_learning_bool(raw, "retire_dormant", where),
+        guarded_paths=guarded,
+        test_roots=test_roots,
+        test_globs=test_globs,
+        edit_ignore=edit_ignore,
+        classify=_learning_bool(raw, "classify", where),
+        model=model,
+        per_run_usd=per_run,
+        daily_usd=daily,
+        **ints,
+    )
+
+
+def load_learning(path: Path) -> LearningConfig:
+    """The effective learning config of factory.yaml at ``path``.
+
+    The whole file is validated (the learn caps depend on the global
+    budget). Raises LedgerError.
+    """
+    return load_config(path).learning
 
 
 def load_config(path: Path) -> Config:
@@ -356,20 +662,41 @@ def build_record(
     config: Config,
     run_id: str,
     run_attempt: int,
-    issue: int,
+    issue: int | None,
     outcome: str,
     dod: str,
     usage: ReportedUsage,
     now: float,
+    stage: str | None = None,
+    pr: int | None = None,
+    published_sha: str | None = None,
+    base_sha: str | None = None,
 ) -> dict[str, Any]:
     if outcome not in OUTCOMES:
         raise LedgerError(f"outcome must be one of {', '.join(OUTCOMES)}")
     if dod not in DOD_RESULTS:
         raise LedgerError(f"dod must be one of {', '.join(DOD_RESULTS)}")
-    if not (_is_count(issue) and issue >= 1):
-        raise LedgerError(f"issue must be an integer >= 1 (got {issue!r})")
+    if stage is not None and stage not in STAGES:
+        raise LedgerError(f"stage must be one of {', '.join(STAGES)}")
+    if stage == STAGE_LEARN:
+        issue = None  # a learn run works across issues
+    elif not (_is_count(issue) and issue >= 1):
+        raise LedgerError(
+            f"issue must be an integer >= 1 (got {issue!r}); only --stage learn "
+            "records name no issue"
+        )
+    if pr is not None and not (_is_count(pr) and pr >= 1):
+        raise LedgerError(f"pr must be an integer >= 1 (got {pr!r})")
+    for name, sha in (("published_sha", published_sha), ("base_sha", base_sha)):
+        if sha is not None and not (isinstance(sha, str) and _SHA40_RE.fullmatch(sha)):
+            raise LedgerError(f"{name} must be 40 lowercase hex digits (got {sha!r})")
 
-    cap = config.per_run_usd
+    # A learn run's model step (classify) runs under learning.budget's
+    # per-run cap (--max-budget-usd), so an unreported learn cost is booked
+    # at that cap, not at the build cap: booking a crashed classify at the
+    # build cap would empty the learn pool and take a build's worth of the
+    # global daily budget.
+    cap = config.learning.per_run_usd if stage == STAGE_LEARN else config.per_run_usd
     cost = usage.total_cost_usd
     record: dict[str, Any] = {
         "issue": issue,
@@ -386,6 +713,14 @@ def build_record(
     }
     if cost is not None and cost > cap:
         record["over_cap"] = True
+    if stage is not None:
+        record["stage"] = stage
+    if pr is not None:
+        record["pr"] = pr
+    if published_sha is not None:
+        record["published_sha"] = published_sha
+    if base_sha is not None:
+        record["base_sha"] = base_sha
     return record
 
 
@@ -425,20 +760,23 @@ def _booking(record: Any) -> tuple[date, Decimal] | None:
     return moment.date(), _dec(booked)
 
 
-def tally_day(
+def tally_day_pools(
     records_dir: Path, day: date, per_run_usd: float
-) -> tuple[Decimal, list[Path]]:
-    """Spend booked on ``day`` (UTC) and the records that could not be read.
+) -> tuple[Decimal, Decimal, list[Path]]:
+    """(all spend, learn spend) booked on ``day`` (UTC), and the unreadable
+    records.
 
-    Each unreadable record is booked at ``per_run_usd``: its day is unknown,
-    so it is assumed to be today.
+    Each unreadable record is booked at ``per_run_usd`` in the total: its
+    day is unknown, so it is assumed to be today. Its stage is unknown too,
+    so it is not counted as learn spend.
     """
     if not records_dir.exists():
-        return Decimal(0), []
+        return Decimal(0), Decimal(0), []
     if not records_dir.is_dir():
         raise LedgerError(f"records dir {records_dir} is not a directory")
 
     spent = Decimal(0)
+    learn = Decimal(0)
     unreadable: list[Path] = []
     for path in sorted(records_dir.glob("*.json")):
         if not path.is_file():
@@ -453,21 +791,45 @@ def tally_day(
             spent += _dec(per_run_usd)
         elif booking[0] == day:
             spent += booking[1]
+            if record.get("stage") == STAGE_LEARN:
+                learn += booking[1]
+    return spent, learn, unreadable
+
+
+def tally_day(
+    records_dir: Path, day: date, per_run_usd: float
+) -> tuple[Decimal, list[Path]]:
+    """Spend booked on ``day`` (UTC) and the records that could not be read."""
+    spent, _, unreadable = tally_day_pools(records_dir, day, per_run_usd)
     return spent, unreadable
 
 
 def check_budget(
-    config: Config, records_dir: Path, in_flight: int, now: float
+    config: Config,
+    records_dir: Path,
+    in_flight: int,
+    now: float,
+    pool: str = "build",
 ) -> tuple[dict[str, Any], list[Path]]:
     if not _is_count(in_flight):
         raise LedgerError(f"--in-flight must be an integer >= 0 (got {in_flight!r})")
-    spent, unreadable = tally_day(
+    if pool not in POOLS:
+        raise LedgerError(f"pool must be one of {', '.join(POOLS)}")
+    spent, learn_spent, unreadable = tally_day_pools(
         records_dir, to_utc(now).date(), config.per_run_usd
     )
     per_run = _dec(config.per_run_usd)
-    worst = spent + in_flight * per_run + per_run
-    allowed = worst <= _dec(config.daily_usd)
-    report = {
+    if pool == "build":
+        worst = spent + in_flight * per_run + per_run
+        allowed = worst <= _dec(config.daily_usd)
+    else:
+        learning = config.learning
+        learn_per_run = _dec(learning.per_run_usd)
+        worst = spent + in_flight * per_run + learn_per_run
+        allowed = worst <= _dec(config.daily_usd) and (
+            learn_spent + learn_per_run <= _dec(learning.daily_usd)
+        )
+    report: dict[str, Any] = {
         "spent_today": float(spent),
         "in_flight": in_flight,
         "per_run_usd": config.per_run_usd,
@@ -476,6 +838,11 @@ def check_budget(
         "allowed": allowed,
         "unreadable": len(unreadable),
     }
+    if pool == "learn":
+        report["pool"] = pool
+        report["learn_spent_today"] = float(learn_spent)
+        report["learn_per_run_usd"] = config.learning.per_run_usd
+        report["learn_daily_usd"] = config.learning.daily_usd
     return report, unreadable
 
 
@@ -519,6 +886,14 @@ def _cost(text: str) -> float:
     return value
 
 
+def _sha40(text: str) -> str:
+    if not _SHA40_RE.fullmatch(text):
+        raise argparse.ArgumentTypeError(
+            f"must be 40 lowercase hex digits (got {text!r})"
+        )
+    return text
+
+
 def _build_parser() -> argparse.ArgumentParser:
     # Accept --config / --records-dir after the subcommand too. SUPPRESS
     # keeps the top-level value unless the option is given again there.
@@ -548,7 +923,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rec.add_argument("--run-id", required=True, help="workflow run id")
     rec.add_argument("--run-attempt", required=True, type=_positive_int)
-    rec.add_argument("--issue", required=True, type=_positive_int)
+    rec.add_argument(
+        "--issue",
+        type=_positive_int,
+        help="the issue the run worked on; required unless --stage learn",
+    )
+    rec.add_argument(
+        "--stage",
+        choices=STAGES,
+        help="which factory stage the run was (stored only when given)",
+    )
+    rec.add_argument("--pr", type=_positive_int, help="the PR a build published")
+    rec.add_argument(
+        "--published-sha", type=_sha40, help="the commit a build published"
+    )
+    rec.add_argument("--base-sha", type=_sha40, help="the base commit of the run")
     rec.add_argument("--outcome", required=True, choices=OUTCOMES)
     rec.add_argument("--dod", choices=DOD_RESULTS, default="unknown")
     rec.add_argument(
@@ -581,6 +970,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="runs already dispatched and not yet recorded (default: 0)",
     )
     chk.add_argument(
+        "--pool",
+        choices=POOLS,
+        default="build",
+        help="build: one more build or spec run (default); learn: one more "
+        "learn step, also capped by learning.budget",
+    )
+    chk.add_argument(
         "--now", type=_finite_float, help="epoch seconds (default: current time)"
     )
     return parser
@@ -601,6 +997,8 @@ def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
             num_turns=usage.num_turns if usage.num_turns is not None else parsed.num_turns,
         )
 
+    if args.stage != STAGE_LEARN and args.issue is None:
+        raise LedgerError("--issue is required unless --stage learn")
     record = build_record(
         config=config,
         run_id=args.run_id,
@@ -610,6 +1008,10 @@ def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
         dod=args.dod,
         usage=usage,
         now=now,
+        stage=args.stage,
+        pr=args.pr,
+        published_sha=args.published_sha,
+        base_sha=args.base_sha,
     )
     path = write_record(args.records_dir, record)
 
@@ -617,13 +1019,13 @@ def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
         print(
             f"WARN: no cost reported for run {args.run_id} attempt "
             f"{args.run_attempt}; booked the full per-run cap "
-            f"${config.per_run_usd:.2f}",
+            f"${record['per_run_cap_usd']:.2f}",
             file=sys.stderr,
         )
     if record.get("over_cap"):
         print(
             f"WARN: reported cost ${record['total_cost_usd']:.2f} exceeds the "
-            f"per-run cap ${config.per_run_usd:.2f}; booked as reported",
+            f"per-run cap ${record['per_run_cap_usd']:.2f}; booked as reported",
             file=sys.stderr,
         )
     print(f"recorded {path}", file=sys.stderr)
@@ -632,7 +1034,9 @@ def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
 
 
 def _cmd_check(args: argparse.Namespace, config: Config, now: float) -> int:
-    report, unreadable = check_budget(config, args.records_dir, args.in_flight, now)
+    report, unreadable = check_budget(
+        config, args.records_dir, args.in_flight, now, pool=args.pool
+    )
     for path in unreadable:
         print(
             f"WARN: unreadable ledger record {path}; booked at the full "
@@ -642,6 +1046,17 @@ def _cmd_check(args: argparse.Namespace, config: Config, now: float) -> int:
     print(json.dumps(report))
     if report["allowed"]:
         return EXIT_OK
+    if args.pool == "learn":
+        learning = config.learning
+        print(
+            f"over budget: one more learn step (${learning.per_run_usd:.2f}) "
+            f"needs a worst case of ${report['worst_case']:.2f} within the daily "
+            f"cap ${config.daily_usd:.2f}, and learn spend today "
+            f"(${report['learn_spent_today']:.2f}) plus the step within the learn "
+            f"cap ${learning.daily_usd:.2f}. Not classifying.",
+            file=sys.stderr,
+        )
+        return EXIT_BLOCKED
     print(
         f"over budget: worst case ${report['worst_case']:.2f} "
         f"(spent today ${report['spent_today']:.2f} + {report['in_flight']} "

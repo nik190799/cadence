@@ -55,13 +55,25 @@ output as a failed intake.
 Read what exists; skip what does not, without failing:
 
 1. `.cadence/cadence.yaml`: verify commands and boundary rules
-   (`where`, `forbidden`, `reason`).
-2. `docs/TEAM_LAUNCH_TEMPLATE.md`: the four fields you fill.
-3. `docs/PATTERNS.md` and `docs/DEFINITION_OF_DONE.md`.
-4. Other files under `.cadence/`: learned notes, patterns and checks
+   (`where`, `forbidden`, `reason`). Rules with `id: L-xxxxxxxx` were
+   learned from earlier factory runs; they bind exactly like the others.
+2. `.cadence/lessons.yaml`: the factory's learned lessons. Every lesson
+   whose `rung` is `pattern` or `check` is **binding**; its `text` says
+   what to avoid and its `class_key` names the area (for example
+   `import-edge:src/domain->src/db`, `missing-test:src/api`). Ignore
+   lessons whose rung is `retired` or `suppressed`.
+3. `docs/TEAM_LAUNCH_TEMPLATE.md`: the four fields you fill.
+4. `docs/PATTERNS.md` and `docs/DEFINITION_OF_DONE.md`. The section
+   `## Learned patterns (factory)` of `docs/PATTERNS.md` lists the same
+   learned lessons; treat it as binding too.
+5. Other files under `.cadence/`: learned notes, patterns and checks
    from retros. Skip `runs/`, `reports/`, schemas and verify evidence
    (`.last_verify*`, `last_verify.log`).
-5. The titles in `docs/ADR/`; open an ADR only if it governs the area.
+6. The titles in `docs/ADR/`; open an ADR only if it governs the area.
+
+Skip `tests/fixtures/retro/`: it holds the deliberately broken samples the
+learned checks are proven on, not code to follow or change. Never list a
+path under it as a likely touched path.
 
 Stay lean: about 20 file reads in total.
 
@@ -81,7 +93,10 @@ Keep only what binds those paths:
   matches a likely path, cited with its `where`, `forbidden` and `reason`
 - each `docs/PATTERNS.md` section for the kind of code involved, cited by
   section number
-- each learned note, pattern or check in `.cadence/` scoped to those paths
+- each learned lesson (`.cadence/lessons.yaml`, rung `pattern` or `check`)
+  whose area is a likely path or contains one, cited by its `id` and text
+- each other learned note, pattern or check in `.cadence/` scoped to those
+  paths
 - each ADR that governs the area
 
 Drop the rest. An empty list says "none found".
@@ -137,6 +152,7 @@ OUT OF SCOPE:
 
 ### Patterns and checks that apply
 - `.cadence/cadence.yaml` boundary: `<where>` must not import `<forbidden>` (<reason>)
+- `.cadence/lessons.yaml` <L-id> (<rung>): <the lesson's text>
 - `docs/PATTERNS.md` §<n> <name>: <what it means for this change>
 
 ### Assumptions

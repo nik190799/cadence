@@ -1,0 +1,17 @@
+commands:
+  format: ["true"]
+  lint: ["true"]
+  test: ["true"]
+
+boundaries:
+  # A seed rule: no id, so the checker computes B-xxxxxxxx.
+  - where: "src/domain/**"
+    forbidden:
+      - "src/http/**"
+    reason: "The domain layer stays free of transport code."
+  # A learned rule, as tool/emit_rule.py --apply --rule-id writes it.
+  - id: L-1a2b3c4d
+    where: "src/domain/**"
+    forbidden:
+      - "src/db/**"
+    reason: "Learned rule L-1a2b3c4d (#1, #2): src/domain/ must not import src/db/. Fixture tests/fixtures/retro/1a2b3c4d/."

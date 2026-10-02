@@ -1,0 +1,58 @@
+{
+  "schema": "cadence.retro-plan/1",
+  "plan_sha": "abababababababababababababababababababababababababababababababab",
+  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+  "generated_at": "2026-10-01T13:00:00Z",
+  "mode": "on",
+  "applied": true,
+  "verify_required": true,
+  "transitions": [
+    {
+      "lesson_id": "L-1a2b3c4d",
+      "class_key": "import-edge:src/domain->src/db",
+      "from": "note",
+      "to": "check",
+      "reason": "promote",
+      "issues": [1, 2],
+      "occurrences": 2,
+      "evidence": ["6f1c2b0e-8a7d-5c43-9b21-0d4e5f6a7b8c"],
+      "text": "`src/domain/` must not import `src/db/`. Enforced by check L-1a2b3c4d (seen in #1, #2).",
+      "sample": {
+        "run": "1002-1",
+        "patch": "patches/1002-1.patch",
+        "patch_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "path": "src/domain/invoice.ts",
+        "line_no": 1,
+        "import_line": "import { query } from \"../db/client\";",
+        "language": "ts",
+        "where": "src/domain/**",
+        "forbidden_pattern": "src/db/**"
+      },
+      "emit": {"exit": 0, "fixture": "tests/fixtures/retro/1a2b3c4d/"}
+    },
+    {
+      "lesson_id": "L-5e6f7a8b",
+      "class_key": "missing-test:src/api",
+      "from": "note",
+      "to": "pattern",
+      "reason": "promote",
+      "issues": [3, 4],
+      "occurrences": 3,
+      "evidence": [],
+      "text": "Changes under `src/api/` must add or update a test (missed in #3, #4).",
+      "sample": null,
+      "emit": null
+    }
+  ],
+  "skipped": [
+    {"class_key": "guarded:tests:modify", "why": "cool-down"}
+  ],
+  "needs_human": [
+    {"key": "review:nit:src/domain", "why": "needs-words"},
+    {"key": "import-edge:src/domain->pkg:lodash", "why": "package-edge"}
+  ],
+  "replay": [
+    {"fixture": "1a2b3c4d", "rule_id": "L-1a2b3c4d", "fired": true}
+  ],
+  "metrics": null
+}

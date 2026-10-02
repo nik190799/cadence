@@ -1,0 +1,30 @@
+budget:
+  per_run_usd: 2.00
+  daily_usd: 6.00
+max_turns: 60
+autonomy: pr-only
+
+learning:
+  mode: "on"
+  promote_after: 2
+  window_attempts: 50
+  window_days: 60
+  repeat_window: 10
+  area_depth: 2
+  max_checks_per_pr: 3
+  max_patterns_per_pr: 5
+  max_retirements_per_pr: 5
+  max_active_patterns: 25
+  retire_dormant: false
+  guarded_paths: [tests, test, .github, .cadence, scripts, tool]
+  test_roots: [tests, test]
+  test_globs: ["tests/**", "test/**", "**/*.test.*", "**/*.spec.*", "**/test_*.py", "**/*_test.py", "**/*_test.go"]
+  edit_ignore: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "**/*.snap"]
+  harvest_since_days: 30
+  harvest_max_prs: 10
+  settle_minutes: 10
+  classify: false
+  model: ""
+  budget:
+    per_run_usd: 0.25
+    daily_usd: 1.00

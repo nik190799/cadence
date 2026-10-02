@@ -70,9 +70,12 @@ Which issue a run belongs to:
     matched by their ``display_title``. Set the workflow's run name to
     ``cadence-factory #<issue>``::
 
-        run-name: "cadence-factory #${{ github.event.issue.number || inputs.issue || 'sweep' }}"
+        run-name: "cadence-factory #${{ github.event.issue.number || inputs.issue || (inputs.stage == 'learn' && 'learn') || 'sweep' }}"
 
-    A title of that form names its issue. Without it, an ``issues`` or
+    A title of that form names its issue. The titles
+    ``cadence-factory #sweep`` (this sweep, or a dispatch without an issue)
+    and ``cadence-factory #learn`` (the learning loop, docs/LEARNING.md)
+    name none, whatever the event. Without the run name, an ``issues`` or
     ``issue_comment`` run is titled after its issue, so a title equal to
     an open issue's title names that issue, and one equal to none names
     none. Scheduled runs are this sweep and name none. Any other run that
@@ -188,6 +191,8 @@ _WORKFLOW_RE = re.compile(r"[A-Za-z0-9_.-]{1,200}\.ya?ml")
 _RUN_NUMBER_RE = re.compile(r"[1-9][0-9]{0,19}")
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _RUN_NAME_RE = re.compile(r"cadence-factory\b[^#\n]*#([1-9][0-9]{0,9})\b")
+# Runs titled like this are the sweep or the learning loop: never an issue's.
+_NO_ISSUE_RUN_NAME_RE = re.compile(r"cadence-factory #(?:sweep|learn)")
 # A human GitHub login; it goes into an API path, so nothing else passes.
 _USER_LOGIN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 _HTTP_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
@@ -479,6 +484,8 @@ def run_targets(run: Run, titles: Mapping[int, str]) -> frozenset[int] | None:
     if run.event == "schedule":
         return frozenset()  # the reconciler's own sweep
     title = run.display_title.strip()
+    if _NO_ISSUE_RUN_NAME_RE.fullmatch(title):
+        return frozenset()  # a sweep or a learn run, however it was started
     found: set[int] = set()
     match = _RUN_NAME_RE.match(title)
     if match:

@@ -5,8 +5,10 @@ title: Factory mode
 
 # Factory mode
 
-> **Status: tools and workflow wired, not yet run live.** The first live
-> run is in a private sandbox repo ([setup](factory-sandbox-setup.md)).
+> **Status: phase 1a ran live; the learning loop (phase 1b) is wired, not
+> yet run live.** The first live runs are in a private sandbox repo
+> ([setup](factory-sandbox-setup.md)); the learning loop is specified in
+> [LEARNING.md](LEARNING.md).
 > Work happens on the `factory` branch. Nothing here ships until the phase 1 gate on
 > 2026-11-13. The full reasoning, research and sources live in the
 > [Cadence Factory decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
@@ -34,8 +36,12 @@ or model.
 | Publish job | Fresh checkout | A freshly minted GitHub App token; opens the draft PR |
 | Human merge | GitHub | A human gate |
 
-Every run appends one findings file to a state branch. A single,
-serialized retro job turns findings into a PR against `.cadence/`.
+Every attempt is scanned (`observe`) and its observation and findings are
+appended to the `cadence/state` branch. The hourly sweep also reads closed
+agent PRs (the human's edits, review comments). A single, serialized retro
+job climbs the ladder and opens one rolling PR against `.cadence/` that a
+human merges. How it works, the data model and the metrics:
+[LEARNING.md](LEARNING.md).
 
 ## Phases and gates
 
@@ -61,27 +67,39 @@ missed:
 
 ```
 plugins/cadence/                       ships to users
-  skills/cadence-intake/               issue → spec file, non-interactive (written; not run live)
+  skills/cadence-intake/               issue → spec file, non-interactive; reads learned lessons (run live)
+  skills/cadence-findings/             review comments → enum labels, read-only (phase 1b; off by default)
+  skills/cadence-retro/                retrospective; "Factory mode" reads and decides the retro PR
   skills/cadence-factory-setup/        GitHub App, budget, autonomy       (stub; manual steps below)
+  schemas/                             observation, classify, lessons, retro-plan, metrics
+                                       (new); retro and cadence-yaml (extended)
   templates/.github/workflows/
-    cadence-factory.yml.tmpl           route → gate → intake / agent → verify → publish,
-                                       ledger, release, reconcile         (wired; not run live)
-  templates/factory.yaml.tmpl          budget, max_turns, autonomy        (done)
+    cadence-factory.yml.tmpl           route → gate → intake / agent → verify → observe → publish,
+                                       ledger, release, reconcile; learn chain harvest →
+                                       classify → learn-record → retro-plan → retro-publish
+  templates/factory.yaml.tmpl          budget, max_turns, autonomy, learning (done)
   templates/tool/
     route.py                           event → stage, deterministic       (done, tested)
     intake_sanitize.py                 issue → clean, untrusted-marked file (done, tested)
-    ledger.py                          cost cap and run log               (done, tested)
+    ledger.py                          cost caps (build and learn pools) and run log (done, tested)
     claim.py                           ref-claim lock per issue           (done, tested)
     reconcile.py                       hourly sweep for stuck work        (done, tested)
+    signals.py                         observe, finalize, put, due, harvest, apply-classified, config
+    ladder.py                          note → pattern → check: plan, apply, guard, pr-body
+    metrics.py                         repeat and escape rates: report, compare
+    emit_rule.py                       proves a check fires on its real sample (extended)
+    check_boundaries.py                the boundary checker (rule ids, paths=, skips retro fixtures)
 eval/                                  internal replay harness; never ships
 docs/FACTORY.md                        this page
+docs/LEARNING.md                       the learning loop: signals, ladder, metrics, security
 docs/factory-sandbox-setup.md          GitHub App, secrets and labels for the sandbox
 ```
 
 ### Wiring (2026-10-01)
 
-The workflow template now calls every tool. It has not run on GitHub
-yet; the sandbox run is next.
+The workflow template calls every tool. The build path (route to release)
+ran live in the sandbox on 2026-10-01; the learning-loop jobs
+([LEARNING.md](LEARNING.md)) are wired and have not run on GitHub yet.
 
 | Job | Runs when | Tokens | Does |
 |---|---|---|---|
@@ -89,11 +107,17 @@ yet; the sandbox run is next.
 | `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec, counts runs already spending, `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
 | `intake` | spec | `GITHUB_TOKEN`: contents and issues read; `ANTHROPIC_API_KEY` | Sanitizes the issue; the `cadence-intake` skill writes one file and nothing else |
 | `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; uploads `change.patch` and the cost result |
-| `verify` | the agent finished | contents read, no secrets | Applies the patch to the base commit, restores `tests/`, `.github/`, `.cadence/`, `scripts/` and `tool/` and leaves out new files there (except new tests), runs `verify.sh`. A patch that touches `.github/workflows/` fails |
+| `verify` | the agent finished | contents read, no secrets | Reads `learning.guarded_paths` and `learning.test_roots` with the base tools before the patch (`.github/`, `.cadence/`, `scripts/` and `tool/` are always guarded), applies the patch to the base commit, restores the guarded paths and leaves out new files there (except under the test roots, `tests/` and `test/` by default), runs `verify.sh`. A patch that touches `.github/workflows/` fails |
+| `observe` | build past the gate, the agent ran (whatever verify said) | contents read, no secrets | Applies the patch to a scratch worktree of the base and only reads it (`python -I`, base tools and config): import edges and rule hits on added lines, guarded operations, missing tests, failing tests and the gate step from the verify log. The observation and findings leave as a job output (`signals.py observe`) |
 | `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or pushes `cadence/issue-N` and opens a draft PR (`pr-open`), or labels `dod-failed` / `needs-human` with the reason |
-| `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch |
+| `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch; for builds, checks observe's bundle (sha256, schemas: `signals.py finalize`) and books `observations/`, `findings/`, `patches/` and `prs/`, create-only (`signals.py put`) |
 | `release` | always, when the gate took the claim | App token | `claim.py release` |
-| `reconcile` | hourly schedule | App token | `reconcile.py` |
+| `reconcile` | hourly schedule | App token | `reconcile.py`; then `signals.py due` says whether the learn chain runs |
+| `harvest` | hourly when due, or a dispatch with `stage=learn` | `GITHUB_TOKEN`: contents, pull requests, issues and actions read | Reads closed factory PRs (PR heads fetched as objects, never checked out): the human's edits, `/cadence-forbid` and `/cadence-class`, review comments from users with write access. Checks the learn budget (`ledger.py check --pool learn`) |
+| `classify` | only if `learning.classify` is on and the learn budget allows | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | The `cadence-findings` skill labels review comments with enums; no shell, one output file |
+| `learn-record` | after harvest | App token | Checks the labels (`signals.py apply-classified`), books post-PR findings, harvest and decision markers, the learn marker, classify's spend and the daily metrics snapshot on `cadence/state` |
+| `retro-plan` | after learn-record | `GITHUB_TOKEN`: contents and pull requests read, no secrets | `ladder.py plan` and `apply` (which calls `emit_rule.py`), `verify.sh` when a check changed, `ladder.py guard`; uploads the retro patch, plan and PR body. One retro queue (`cadence-factory-retro`) |
+| `retro-publish` | the plan changed | App token (contents, pull requests) | `ladder.py guard` again on the patch, then git and gh only: force-pushes `cadence/retro` with a lease (never over a human's push) and opens or updates one non-draft PR. Merges only in an eval sandbox (`mode: eval-sandbox`, `CADENCE_EVAL_SANDBOX`, private repo) |
 
 **Labels are one state at a time:** `factory` (a human adds it) →
 `spec-ready` → `building` → `pr-open`, or `dod-failed` / `needs-human`.
@@ -141,8 +165,9 @@ Still to do:
 
 - **Pin every action to a full commit SHA** before enabling anywhere but
   the sandbox (CICD_PLAN). The template uses major tags.
-- **Run it live** in the sandbox: spec, approve, build, PR; then a budget
-  refusal, a held claim, a cancelled run and a re-run.
+- **Run it live** in the sandbox: spec, approve, build, PR ran on
+  2026-10-01; still to see live: a budget refusal, a held claim, a
+  cancelled run and a re-run.
 - **DoD retry.** v1 labels `dod-failed` and stops; one retry that feeds the
   failure back to the agent is planned.
 - **Intake is booked but not budget-checked.** Each intake run is bounded
@@ -152,7 +177,9 @@ Still to do:
   outside them (a root `conftest.py`, package scripts) or a new file under
   `tests/` (a new `tests/conftest.py`). The draft PR and the human merge
   remain the real gate.
-- **Findings and the retro job** are not wired yet.
+- **Findings and the retro job** are wired: see [LEARNING.md](LEARNING.md)
+  for the signals, the ladder, the metrics and the security model. Next is
+  the live demo in the sandbox (a planted `src/db` edge over three issues).
 - **`/cadence-factory-setup`** is still a stub: setup is manual
   ([sandbox steps](factory-sandbox-setup.md)).
 
@@ -162,9 +189,14 @@ Still to do:
   Cadence never resells, proxies or pays for model usage.
 - The agent job never holds a push token. Tests, CI config and
   `.cadence/` are restored from the base branch before the gate runs.
+- No trigger runs code from a PR head (no `pull_request`,
+  `pull_request_target` or `workflow_run`). Closed PRs are read by the
+  hourly sweep or a `stage=learn` dispatch, as objects.
 - Waking agents, approvals and permissions are deterministic: exact
   slash commands from users with write access, never free-text intent.
-- Every retro change to `.cadence/` arrives as a PR a human reviews.
+- Every retro change to `.cadence/` arrives as a PR a human reviews. The
+  only auto-merge is a private eval repo with `mode: eval-sandbox` and the
+  repository variable `CADENCE_EVAL_SANDBOX` set, all three at once.
 - No per-developer metrics; report per repo and per rule.
 
 ## Open questions
