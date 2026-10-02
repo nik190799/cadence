@@ -135,6 +135,8 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
    in the sandbox with a scratch run (both outcomes); the sandbox workflow has it
    (`aa1d5b6`). Sandbox PR #2 was reviewed and merged on 2026-10-02.
 
+**2026-10-02 sandbox:** hardening installed (`a1e16fd`); sweep and learn smoke runs green with every action pinned; the DoD retry is not yet proven live.
+
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
