@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-02 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built, not yet run live.
+**Updated:** 2026-10-02 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built and smoke-tested live; the DoD retry, the retro fallback and SHA pins built, not yet run live.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -29,7 +29,8 @@ Full reasoning, 24 angles and sources: the
 
 The `factory` branch runs end to end in the sandbox (phase 1a, below) and
 now carries the learning loop (phase 1b, [docs/LEARNING.md](docs/LEARNING.md)),
-which has passed tests and an offline simulation but has not run on GitHub.
+which has passed tests, an offline simulation and a live smoke test in the
+sandbox (2026-10-02), but no live end-to-end demo yet.
 
 ## Do not
 
@@ -80,16 +81,30 @@ which has passed tests and an offline simulation but has not run on GitHub.
    predates the loop), booked learn records and metrics, and planned 0
    transitions with retro-publish skipped. One live fix: `retro-plan` checks out
    under `repo/`, so its runtime setup must point there. Review follow-ups:
-   - a retro result that fails `verify.sh` fails retro-plan with no PR, and every
-     later learn run fails the same way (should fall back to a pattern);
-   - a directory-index import (`from "../db"`) gets the right class but no check,
-     because `check_boundaries.py` matches tokens;
+   - ~~a retro result that fails `verify.sh` fails retro-plan with no PR, and every
+     later learn run fails the same way~~ **Closed 2026-10-02** on `factory-1c`:
+     retro-plan demotes the plan's checks to patterns and runs `verify.sh` once
+     more; a plan that still fails is recorded by the new `retro-failed` job
+     (`retro/failed/<plan_sha>.json` on `cadence/state`) and skipped until `main`
+     or the plan changes;
+   - ~~a directory-index import (`from "../db"`) gets the right class but no
+     check~~ **Closed 2026-10-02:** `check_boundaries.py` resolves relative TS/JS
+     and Python imports, and a check is proven on up to three samples;
    - `queue: max` on the learn jobs, `gh pr merge --match-head-commit` with the
      App token and real job-output sizes are unproven until it runs live.
-2. **One retry on a failed gate,** feeding the verify log back to the agent
-   (TODO in the publish job).
-3. **Hardening before any real repo:** pin every action to a commit SHA; research
-   Anthropic identity federation for GitHub Actions to replace the stored API key.
+2. ~~**One retry on a failed gate.**~~ **Built 2026-10-02** on `factory-1c`, not
+   yet run live: `retry.on_dod_fail` (default 1) retries a gate that failed at
+   format, lint, boundaries or test once, in the same run (same `/approve`, spec
+   and claim; never a new dispatch), from the first patch, with the failed step
+   and a cleaned excerpt of the verify log. `retry-gate` checks two `per_run_usd`
+   for the run against the daily cap first. Both attempts are observed and
+   booked; the retry as `<run>.retry1`. See the wiring in
+   [docs/FACTORY.md](docs/FACTORY.md).
+3. **Hardening before any real repo:** ~~pin every action to a commit SHA~~
+   **done 2026-10-02** in both workflow templates (and `cadence.yml.tmpl` reads
+   only); Anthropic identity federation for GitHub Actions is researched in
+   [docs/factory-auth.md](docs/factory-auth.md), with no workflow change yet.
+   Next: run the retry and a demoted retro plan live in the sandbox.
 4. ~~**Show the gate on the PR.**~~ **Done 2026-10-02** (`a64f9ae`): publish posts a
    `cadence/verify` check, green only on the exact tree verify tested. Checked live
    in the sandbox with a scratch run (both outcomes); the sandbox workflow has it
@@ -106,8 +121,6 @@ caught a real repeat.
 
 - `docs/case-studies/flutter-sandbox.md` links to `agent_teams_sandbox`, which was
   never pushed (404). Push it or drop the link.
-- `templates/.github/workflows/cadence.yml.tmpl` has no `permissions:` block and
-  pins actions by tag, not SHA.
 
 ## Still worth doing (release-independent)
 

@@ -32,6 +32,32 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   (agent / verify / publish jobs, reconciler)
 - Tool stubs: `templates/tool/ledger.py`, `claim.py`, `reconcile.py`
 - `eval/README.md` — internal rules-on vs rules-frozen eval plan
+- One automatic retry on a failed Definition of Done gate
+  (`retry.on_dod_fail` in `.cadence/factory.yaml`, default 1): only for a
+  failure at format, lint, boundaries or test, once, inside the same run
+  (the same `/approve`, spec and claim; the factory never dispatches a
+  build). New jobs `retry-gate` (budget check in the gate's queue, the run
+  counted twice), `agent-retry`, `verify-retry` and `observe-retry`;
+  `publish` uses the attempt that passed and the PR body says so; `ledger`
+  books the retry as `<run>.retry1`. New `signals.py excerpt` writes the
+  cleaned, size-limited, credential-redacted verify log the retry agent
+  reads.
+- `retro-plan` no longer fails when `scripts/verify.sh` fails on the retro
+  result: the plan's checks are demoted to patterns (`ladder.py apply
+  --verify-failed`) and verify runs once more; the PR body has a "Demoted
+  after verify failed" section. A plan that still fails is recorded by the
+  new `retro-failed` job (`retro/failed/<plan_sha>.json` on
+  `cadence/state`) and skipped until `main` or the plan changes.
+- `check_boundaries.py` now resolves relative TS/JS imports and Python
+  imports, so directory-index imports (`from "../db"`, `"../db/index"`)
+  fire a rule on `src/db/**`. Existing seed rules may report new, real
+  violations on code that imports a directory index. A learned check is
+  proven on up to three samples.
+- Every `uses:` in `cadence-factory.yml.tmpl` and `cadence.yml.tmpl` is
+  pinned to a full commit SHA with the tag as a comment;
+  `cadence.yml.tmpl` declares `permissions: contents: read`.
+- `docs/factory-auth.md`: research on replacing the stored
+  `ANTHROPIC_API_KEY` with GitHub Actions OIDC (no workflow change).
 
 ## [0.3.0-rc.2] — 2026-05-27
 

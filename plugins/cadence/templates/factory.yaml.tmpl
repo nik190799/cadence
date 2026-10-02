@@ -2,8 +2,8 @@
 #
 # Rendered by /cadence-factory-setup into .cadence/factory.yaml. Read by
 # tool/ledger.py (the budget) and by .github/workflows/cadence-factory.yml
-# (the per-run cap, max_turns and autonomy). Change it by PR, like anything
-# else under .cadence/.
+# (the per-run cap, max_turns, retry and autonomy). Change it by PR, like
+# anything else under .cadence/.
 #
 # Cadence never pays for, resells or proxies model usage. These caps bound
 # how much of YOUR Anthropic API key the factory may spend. Also set a spend
@@ -19,13 +19,27 @@ budget:
   # Cap on total spend per UTC day (00:00 to 23:59 UTC), in US dollars.
   # Before each dispatch, `ledger.py check` adds today's booked spend, one
   # per_run_usd for every run still in flight and one for the new run, and
-  # refuses to start the run if that worst case would exceed this cap.
+  # refuses to start the run if that worst case would exceed this cap. A
+  # build in its automatic retry (retry below) counts twice in flight.
   # Must be greater than 0.
   daily_usd: 25.00
 
 # Maximum agent turns for one run. Passed to Claude Code as --max-turns.
 # A positive whole number.
 max_turns: 60
+
+# One automatic retry when the Definition of Done gate fails.
+#   0   off: a failed gate labels the issue dod-failed and stops.
+#   1   one retry (the default).
+# Only a failure at format, lint, boundaries or test is retried; a patch
+# that does not apply, a change to .github/workflows/ or a config error is
+# not. The retry runs in the same workflow run, under the same /approve and
+# the same claim, and starts from the first attempt's patch, with the step
+# that failed and a cleaned excerpt of the verify log. It can spend up to
+# one more budget.per_run_usd, and the daily cap is checked for it, with
+# this run counted, before it starts.
+retry:
+  on_dod_fail: 1
 
 # How far the factory may go without a human.
 #   pr-only   The factory opens a draft PR; a human always reviews and
