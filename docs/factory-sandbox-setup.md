@@ -189,7 +189,9 @@ workflow from there.
   permissions** at read-only, and leave **Allow GitHub Actions to create
   and approve pull requests** unticked (the App opens the PRs).
 - **Sandbox → Settings → Rules / Branches:** no rule that stops the App
-  from creating or deleting `cadence/*` branches.
+  from creating or deleting `cadence/*` branches, and `cadence/verify` not
+  listed as a required check (a commit a human pushes to a factory branch
+  never gets one). Factory PRs show it beside your CI.
 - **Recommended: rulesets for the factory's own branches** (**Settings →
   Rules → Rulesets → New branch ruleset**, enforcement **Active**, targets
   added under **Include by pattern**):
