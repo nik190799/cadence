@@ -5,8 +5,9 @@ title: Factory mode
 
 # Factory mode
 
-> **Status: design + scaffold, not functional.** Work happens on the
-> `factory` branch. Nothing here ships until the phase 1 gate on
+> **Status: tools and workflow wired, not yet run live.** The first live
+> run is in a private sandbox repo ([setup](factory-sandbox-setup.md)).
+> Work happens on the `factory` branch. Nothing here ships until the phase 1 gate on
 > 2026-11-13. The full reasoning, research and sources live in the
 > [Cadence Factory decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
 
@@ -60,38 +61,100 @@ missed:
 
 ```
 plugins/cadence/                       ships to users
-  skills/cadence-intake/               issue → spec, non-interactive      (stub)
-  skills/cadence-factory-setup/        GitHub App, budget, autonomy       (stub)
+  skills/cadence-intake/               issue → spec file, non-interactive (written; not run live)
+  skills/cadence-factory-setup/        GitHub App, budget, autonomy       (stub; manual steps below)
   templates/.github/workflows/
-    cadence-factory.yml.tmpl           agent / verify / publish jobs      (skeleton)
+    cadence-factory.yml.tmpl           route → gate → intake / agent → verify → publish,
+                                       ledger, release, reconcile         (wired; not run live)
   templates/factory.yaml.tmpl          budget, max_turns, autonomy        (done)
   templates/tool/
+    route.py                           event → stage, deterministic       (done, tested)
+    intake_sanitize.py                 issue → clean, untrusted-marked file (done, tested)
     ledger.py                          cost cap and run log               (done, tested)
     claim.py                           ref-claim lock per issue           (done, tested)
-    reconcile.py                       hourly sweep for stuck work        (stub)
+    reconcile.py                       hourly sweep for stuck work        (done, tested)
 eval/                                  internal replay harness; never ships
 docs/FACTORY.md                        this page
+docs/factory-sandbox-setup.md          GitHub App, secrets and labels for the sandbox
 ```
 
-### Wiring still to do (found in review, 2026-10-01)
+### Wiring (2026-10-01)
 
-The tools work; the workflow skeleton does not call them correctly yet.
+The workflow template now calls every tool. It has not run on GitHub
+yet; the sandbox run is next.
 
-- **Claim needs a push token.** `claim.py acquire` pushes a ref, so it must
-  run in a job holding the App token, not in the agent job. Pass
-  `--run-id "$GITHUB_RUN_ID"` (acquire is re-entrant for the same run).
-  Release with `if: always()`; the reconciler uses
-  `release --force --sha <sha from stale>` after confirming the run is gone.
-- **One global gate for spending.** `ledger.py check` must run before every
-  dispatch, inside a single concurrency group, with `--in-flight` from the
-  Actions API (`actions: read`). Otherwise two issues can both pass the check.
-- **The ledger needs the result.** The agent job must upload the Claude Code
-  result file, or every record books the full cap. Map job results
-  (`success`/`failure`/`cancelled`/`skipped`) to ledger outcomes, and do not
-  book a run that lost its claim and spent nothing.
-- **Where records live.** Run records go on a state branch, not under
-  `.cadence/` (that folder is human-reviewed and restored from the base
-  branch). Pass `--records-dir` explicitly.
+| Job | Runs when | Tokens | Does |
+|---|---|---|---|
+| `route` | a `factory` label, an `/approve` comment, or a dispatch | `GITHUB_TOKEN`: contents read | Looks up the sender's permission; `route.py` picks `spec`, `build` or `none`; reads the caps from `factory.yaml` |
+| `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec, counts runs already spending, `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
+| `intake` | spec | `GITHUB_TOKEN`: contents and issues read; `ANTHROPIC_API_KEY` | Sanitizes the issue; the `cadence-intake` skill writes one file and nothing else |
+| `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; uploads `change.patch` and the cost result |
+| `verify` | the agent finished | contents read, no secrets | Applies the patch to the base commit, restores `tests/`, `.github/`, `.cadence/`, `scripts/` and `tool/` and leaves out new files there (except new tests), runs `verify.sh`. A patch that touches `.github/workflows/` fails |
+| `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or pushes `cadence/issue-N` and opens a draft PR (`pr-open`), or labels `dod-failed` / `needs-human` with the reason |
+| `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch |
+| `release` | always, when the gate took the claim | App token | `claim.py release` |
+| `reconcile` | hourly schedule | App token | `reconcile.py` |
+
+**Labels are one state at a time:** `factory` (a human adds it) →
+`spec-ready` → `building` → `pr-open`, or `dod-failed` / `needs-human`.
+Labels and comments are written with `GITHUB_TOKEN`, so they start no
+workflow. To rebuild an approved spec, add `spec-ready` back and reply
+`/approve`.
+
+Closed from the 2026-10-01 review:
+
+- **Claim needs a push token.** `gate` mints the App token and runs
+  `claim.py acquire --run-id "$GITHUB_RUN_ID"`; `release` runs with
+  `if: always()` and `--sha` of the claim it took.
+- **One global gate for spending.** `gate` sits in the concurrency group
+  `cadence-factory-gate` (`queue: max`, never cancelled) and passes
+  `--in-flight` from the Actions API.
+- **The ledger needs the result.** `intake` and `agent` upload the final
+  result's numbers only (not the transcript). Job results map to
+  outcomes; a skipped model job books nothing; a re-run that did not re-run
+  the model books $0.
+- **Where records live.** `runs/` on the orphan branch `cadence/state`,
+  passed as `--records-dir`; pushes retry three times on a non-fast-forward.
+
+Closed in the adversarial review (2026-10-01):
+
+- **Reconciler spec retries.** `route.py` lets a `workflow_dispatch` from
+  exactly `CADENCE_BOT_LOGIN` through, for `spec` only (never `build`).
+  `reconcile.py` dispatches a retry only when whoever last added `factory`
+  has write access now, so a triage user or an issue template that applies
+  `factory` cannot get a spec the label event refused.
+- **Hidden text in the approved spec.** The approver reads the rendered
+  spec comment; the build agent gets its raw text. `publish` now removes
+  HTML comments (past the marker line) and invisible characters before
+  posting. `intake_sanitize.py` also drops variation selectors and other
+  invisible fillers, and repeats comment removal until none is left.
+- **A second `/approve`** queued behind the first build no longer starts a
+  second build: `gate` re-checks the live labels.
+- **Guarded paths.** `verify` lists changed files NUL-separated (a quoted,
+  non-ASCII name slipped past the `.github/workflows/` check) and leaves
+  out new files under `.github/`, `.cadence/`, `scripts/` and `tool/` (a
+  new `tool/yaml.py` would have shadowed PyYAML for the boundary check).
+- **The stuck-build comment** now says to swap `building` for
+  `spec-ready` before `/approve`, which is what `route.py` requires.
+
+Still to do:
+
+- **Pin every action to a full commit SHA** before enabling anywhere but
+  the sandbox (CICD_PLAN). The template uses major tags.
+- **Run it live** in the sandbox: spec, approve, build, PR; then a budget
+  refusal, a held claim, a cancelled run and a re-run.
+- **DoD retry.** v1 labels `dod-failed` and stops; one retry that feeds the
+  failure back to the agent is planned.
+- **Intake is booked but not budget-checked.** Each intake run is bounded
+  by `budget.per_run_usd`; decide whether it goes through `gate`.
+- **The gate is not a sandbox.** Guarded paths are restored, but agent code
+  still runs in `verify`, so a hostile patch can fake a pass through files
+  outside them (a root `conftest.py`, package scripts) or a new file under
+  `tests/` (a new `tests/conftest.py`). The draft PR and the human merge
+  remain the real gate.
+- **Findings and the retro job** are not wired yet.
+- **`/cadence-factory-setup`** is still a stub: setup is manual
+  ([sandbox steps](factory-sandbox-setup.md)).
 
 ## Rules that hold in every phase
 
