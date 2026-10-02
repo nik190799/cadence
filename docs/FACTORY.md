@@ -89,8 +89,8 @@ yet; the sandbox run is next.
 | `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec, counts runs already spending, `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
 | `intake` | spec | `GITHUB_TOKEN`: contents and issues read; `ANTHROPIC_API_KEY` | Sanitizes the issue; the `cadence-intake` skill writes one file and nothing else |
 | `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; uploads `change.patch` and the cost result |
-| `verify` | the agent finished | contents read, no secrets | Applies the patch to the base commit, restores `tests/`, `.github/`, `.cadence/`, `scripts/` and `tool/` and leaves out new files there (except new tests), runs `verify.sh`. A patch that touches `.github/workflows/` fails |
-| `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or pushes `cadence/issue-N` and opens a draft PR (`pr-open`), or labels `dod-failed` / `needs-human` with the reason |
+| `verify` | the agent finished | contents read, no secrets | Applies the patch to the base commit, restores `tests/`, `.github/`, `.cadence/`, `scripts/` and `tool/` and leaves out new files there (except new tests), records the tree it tests, runs `verify.sh`. A patch that touches `.github/workflows/` fails |
+| `publish` | spec, or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write, checks write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or pushes `cadence/issue-N`, posts the `cadence/verify` check on that commit and opens a draft PR (`pr-open`), or labels `dod-failed` / `needs-human` with the reason |
 | `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch |
 | `release` | always, when the gate took the claim | App token | `claim.py release` |
 | `reconcile` | hourly schedule | App token | `reconcile.py` |
@@ -137,6 +137,18 @@ Closed in the adversarial review (2026-10-01):
 - **The stuck-build comment** now says to swap `building` for
   `spec-ready` before `/approve`, which is what `route.py` requires.
 
+Closed from the review of the first factory PR (2026-10-02):
+
+- **The gate's result is visible on the PR.** Sandbox PR #2 showed only
+  the bot's own checklist; the Definition of Done ran inside the factory
+  run. `publish` now posts a `cadence/verify` check (with `GITHUB_TOKEN`,
+  so it starts no workflow) on the commit it pushes. It is `success` only
+  when that commit's tree is exactly the tree `verify` recorded before
+  running `verify.sh`; otherwise, as when guarded paths were restored, it
+  is `action_required` and says why. A commit a human pushes to the
+  branch later gets no `cadence/verify` check, so do not make it a
+  required status check: the repo's own CI covers those commits.
+
 Still to do:
 
 - **Pin every action to a full commit SHA** before enabling anywhere but
@@ -150,8 +162,9 @@ Still to do:
 - **The gate is not a sandbox.** Guarded paths are restored, but agent code
   still runs in `verify`, so a hostile patch can fake a pass through files
   outside them (a root `conftest.py`, package scripts) or a new file under
-  `tests/` (a new `tests/conftest.py`). The draft PR and the human merge
-  remain the real gate.
+  `tests/` (a new `tests/conftest.py`). A green `cadence/verify` check
+  means `verify.sh` passed, not that it could not be faked. The draft PR
+  and the human merge remain the real gate.
 - **Findings and the retro job** are not wired yet.
 - **`/cadence-factory-setup`** is still a stub: setup is manual
   ([sandbox steps](factory-sandbox-setup.md)).
