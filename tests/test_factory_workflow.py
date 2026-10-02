@@ -206,8 +206,14 @@ def test_learn_chain_never_runs_on_issue_events() -> None:
     assert JOBS["retro-publish"]["needs"] == ["retro-plan"]
     assert "needs.harvest.result == 'success'" in JOBS["learn-record"]["if"]
     assert "needs.learn-record.result == 'success'" in JOBS["retro-plan"]["if"]
-    assert JOBS["retro-publish"]["if"] == "needs.retro-plan.outputs.changed == 'true'"
-    assert JOBS["classify"]["if"] == "needs.harvest.outputs.llm_allowed == 'true'"
+    assert JOBS["retro-publish"]["if"] == (
+        "!cancelled() && needs.retro-plan.result == 'success' && "
+        "needs.retro-plan.outputs.changed == 'true'"
+    )
+    assert JOBS["classify"]["if"] == (
+        "!cancelled() && needs.harvest.result == 'success' && "
+        "needs.harvest.outputs.llm_allowed == 'true'"
+    )
     assert JOBS["reconcile"]["outputs"]["learn_due"] == "${{ steps.learn.outputs.learn_due }}"
 
 
@@ -590,3 +596,28 @@ def test_verify_check_needs_a_pushed_commit(tmp_path: Path, head: str) -> None:
     proc, data = _run_check_step(tmp_path, head=head, pushed=TREE, verified=TREE)
     assert proc.returncode != 0
     assert data is None
+
+
+# Jobs that must still run when a job upstream of them was skipped: intake in
+# a build, gate/agent/verify in a spec run, reconcile in a stage=learn
+# dispatch, classify whenever labelling is off. Without always() or
+# !cancelled(), GitHub's implicit success() skips the job (retro-publish never
+# ran live until 2026-10-02 for exactly this reason).
+MUST_SURVIVE_SKIPPED_UPSTREAM = (
+    "observe", "publish", "ledger", "release",
+    "harvest", "classify", "learn-record", "retro-plan", "retro-publish",
+)
+
+
+@pytest.mark.parametrize("name", MUST_SURVIVE_SKIPPED_UPSTREAM)
+def test_job_survives_a_skipped_upstream_job(name: str) -> None:
+    cond = str(JOBS[name].get("if", ""))
+    assert "always()" in cond or "!cancelled()" in cond, (
+        f"{name} needs always() or !cancelled() in its if: {cond!r}"
+    )
+    if "!cancelled()" in cond and "always()" not in cond:
+        needs = JOBS[name]["needs"]
+        direct = [needs] if isinstance(needs, str) else needs
+        assert any(f"needs.{d}.result" in cond for d in direct) or name in (
+            "observe", "publish",
+        ), f"{name} must check a direct parent's result explicitly"

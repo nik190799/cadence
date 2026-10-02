@@ -1946,7 +1946,9 @@ jobs:
   # (signals.py apply-classified) before any of it touches a finding.
   classify:
     needs: [harvest]
-    if: needs.harvest.outputs.llm_allowed == 'true'
+    # !cancelled(): GitHub skips a job whose implicit success() sees a skipped
+    # job anywhere upstream (reconcile is skipped in a stage=learn dispatch).
+    if: "!cancelled() && needs.harvest.result == 'success' && needs.harvest.outputs.llm_allowed == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -2426,7 +2428,9 @@ jobs:
   # run. Keep it that way.
   retro-publish:
     needs: [retro-plan]
-    if: needs.retro-plan.outputs.changed == 'true'
+    # !cancelled(): classify is skipped whenever labelling is off (the default),
+    # and an implicit success() would skip this job too (seen live, 2026-10-02).
+    if: "!cancelled() && needs.retro-plan.result == 'success' && needs.retro-plan.outputs.changed == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions: {} # everything here uses the App token

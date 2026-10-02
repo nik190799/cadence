@@ -78,7 +78,33 @@ which has passed tests and an offline simulation but has not run on GitHub.
    learn runs 36971373021 and 36971546373 harvested it once (`no-record`: it
    predates the loop), booked learn records and metrics, and planned 0
    transitions with retro-publish skipped. One live fix: `retro-plan` checks out
-   under `repo/`, so its runtime setup must point there. Review follow-ups:
+   under `repo/`, so its runtime setup must point there.
+   **Live demo run 2026-10-02 (sandbox issues #3, #5, #8; maintainer actions by
+   Claude for nik190799, except the first `/approve` and `/cadence-forbid`):**
+   - #3: the agent's loader in `src/domain` imported `../db/client`; a
+     `/cadence-forbid src/domain -> src/db` on PR #4, then close: harvest booked a
+     reviewer-command finding with the real line; the ladder kept it a note.
+   - #5: the same import again (PR #6, closed unmerged, no command): the ladder
+     promoted the class to check `L-f356387a`, proved on #5's real line, and
+     retro PR #7 opened with only `.cadence/`, `docs/PATTERNS.md` and a fixture.
+     Merged; `decisions/retro-pr-7.json` says landed.
+   - #8: the intake spec cited `L-f356387a`, said the issue's design would fail
+     the gate, and redesigned with an injected query function; the build's domain
+     file has no imports (PR #9, `cadence/verify` green, left open for review).
+   - Metrics: 3 attempts, 3 observed; repeats 1 of 2 opportunities (0.5);
+     `learned_check_catches` 0, because the rule prevented the repeat at spec time
+     instead of catching it at the gate. Decide whether a spec-time prevention
+     (lesson cited and class absent) should count toward the Nov 13 criterion
+     "a retro rule that later caught a real repeat"; today no metric records it.
+   - Live bug fixed: `retro-publish` (and `classify` in a dispatch) never ran,
+     because GitHub's implicit `success()` skips a job when any upstream job was
+     skipped (classify is skipped whenever labelling is off). Both now use
+     `!cancelled()` plus an explicit result check; a test pins every job that
+     must survive a skipped upstream job.
+   - Also seen: Git Bash rewrites a leading `/approve` into a Windows path
+     (`MSYS_NO_PATHCONV=1` fixes it); route.py correctly refused the mangled
+     comment.
+   Review follow-ups:
    - a retro result that fails `verify.sh` fails retro-plan with no PR, and every
      later learn run fails the same way (should fall back to a pattern);
    - a directory-index import (`from "../db"`) gets the right class but no check,
