@@ -6,7 +6,10 @@ suppressed, exactly as docs/LEARNING.md ("The ladder") says. These tests
 pin the counting rules (distinct issues, the window, seeding), rejection
 cool-down and suppression, the caps and their ranking, every retirement
 rule, hysteresis and pinning, the plan hash, the guard, ``apply`` with a
-stub emitter and with the real one, and the PR body.
+stub emitter and with the real one, and the PR body. Also: a check's up to
+three samples and how ``apply`` falls through them, a plan recorded as
+failed on cadence/state (retro/failed/), and ``apply --verify-failed``
+with its "Demoted after verify failed" PR body section.
 
 State dirs and repos are generated per test by tests/fixtures/ladder/
 builders.py; git runs with an isolated, empty global config.
@@ -14,8 +17,10 @@ builders.py; git runs with an isolated, empty global config.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -752,7 +757,13 @@ def test_plan_cli_writes_a_valid_plan(tmp_path, git_env, capsys):
     assert rc == 0
     printed = json.loads(capsys.readouterr().out)
     plan = json.loads(out.read_text(encoding="utf-8"))
-    assert printed == {"changed": True, "plan_sha": plan["plan_sha"], "mode": "on", "transitions": 1}
+    assert printed == {
+        "changed": True,
+        "plan_sha": plan["plan_sha"],
+        "mode": "on",
+        "transitions": 1,
+        "failed_before": False,
+    }
     assert plan["base_sha"] == b.git(root, "rev-parse", "HEAD", env=git_env).strip()
     rc = ladder.main(
         [
@@ -1146,8 +1157,9 @@ def test_pr_body_is_built_from_keys_and_numbers_only(tmp_path, git_env):
     body = out.read_text(encoding="utf-8")
     assert "@" not in body and "<" not in body
     assert body.rstrip().endswith(f"cadence retro plan {applied['plan_sha'][:12]}")
-    for title in ("Checks", "Patterns", "Retired", "Needs a human", "Replay", "Metrics"):
-        assert f"### {title}" in body
+    # Without a verify fallback the sections are exactly the usual ones.
+    titles = [line[4:] for line in body.splitlines() if line.startswith("### ")]
+    assert titles == ["Checks", "Patterns", "Retired", "Needs a human", "Replay", "Metrics"]
     assert f"`{DB_LID}`" in body and "#1, #2" in body
     assert "https://github.com/octo/app/actions/runs/123" in body
     assert "pkg:(at)evil/mention" in body
@@ -1202,3 +1214,565 @@ def test_pr_body_refuses_a_foreign_run_url(tmp_path, git_env, url):
         ["pr-body", "--applied", str(applied_path), "--repo", "octo/app", "--run-url", url, "--out", str(tmp_path / "b.md")]
     )
     assert rc == 2
+
+
+# --- a check's samples: up to three, and apply falls through them ----------------------------------
+
+
+def _old_plan_sha(base: str, transitions) -> str:
+    """plan_sha as it was before alternates existed (the golden contract)."""
+    items = []
+    for t in transitions:
+        s = t.get("sample")
+        items.append(
+            {
+                "class_key": t["class_key"],
+                "to": t["to"],
+                "reason": t["reason"],
+                "sample": {"patch_sha256": s["patch_sha256"], "path": s["path"], "line_no": s["line_no"]} if s else None,
+            }
+        )
+    items.sort(key=lambda d: (d["to"], d["class_key"]))
+    payload = json.dumps({"base_sha": base, "transitions": items}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def test_find_samples_are_distinct_newest_first_and_at_most_three(tmp_path):
+    pool = "import { db } from '../db/pool';"
+    raw = "import { raw } from '../db/raw';"
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1)  # the same path and line as 101 and 106
+    edge_attempt(state, "103", 3, 2, path="src/domain/invoice.ts")
+    edge_attempt(state, "104", 4, 3, line=raw, with_patch=False)  # no stored patch
+    edge_attempt(state, "105", 5, 4, line=pool)
+    edge_attempt(state, "106", 6, 5)
+    seed(state)
+    plan = make_plan(tmp_path, state)
+    t = by_key(plan)[DB_EDGE]
+    picked = [(s["run"], s["path"], s["import_line"]) for s in [t["sample"], *t["alternates"]]]
+    assert picked == [
+        ("106-1", "src/domain/order.ts", LINE),
+        ("105-1", "src/domain/order.ts", pool),
+        ("103-1", "src/domain/invoice.ts", LINE),
+    ]
+    for s in t["alternates"]:
+        assert (s["where"], s["forbidden_pattern"], s["language"]) == ("src/domain/**", "src/db/**", "ts")
+        assert s["patch"] == f"patches/{s['run']}.patch"
+    assert ladder.Schemas(None, b.SCHEMA_DIR).errors("retro-plan.schema.json", plan, required=True) == []
+    # The alternates are part of what plan_sha identifies.
+    assert plan["plan_sha"] != _old_plan_sha(BASE, plan["transitions"])
+    fewer = [dict(t, alternates=t["alternates"][:1])]
+    assert ladder.plan_sha(BASE, fewer) != plan["plan_sha"]
+
+
+def test_a_single_sample_has_no_alternates_and_the_old_plan_sha(tmp_path):
+    plan, _, _ = _edge_plan(tmp_path)
+    t = by_key(plan)[DB_EDGE]
+    assert t["sample"] is not None and "alternates" not in t
+    assert plan["plan_sha"] == _old_plan_sha(BASE, plan["transitions"])
+
+
+def test_a_pattern_offered_as_a_check_carries_alternates_too(tmp_path):
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1)
+    edge_attempt(state, "103", 3, 4, path="src/domain/invoice.ts")
+    seed(state)
+    t = by_key(make_plan(tmp_path, state, lessons=[b.lesson(DB_EDGE, "pattern", since="2026-09-02")]))[DB_EDGE]
+    assert (t["from"], t["to"]) == ("pattern", "check")
+    assert t["sample"]["path"] == "src/domain/invoice.ts"
+    assert [a["path"] for a in t["alternates"]] == ["src/domain/order.ts"]
+
+
+def _three_sample_plan(tmp_path, lines=(LINE, LINE, LINE)):
+    """Samples c.ts (newest), then b.ts, then a.ts, each from its own run."""
+    state = b.StateDir(tmp_path / "state")
+    for i, name in enumerate(("a", "b", "c")):
+        edge_attempt(state, f"10{i + 1}", i + 1, i, path=f"src/domain/{name}.ts", line=lines[i])
+    seed(state)
+    plan = make_plan(tmp_path, state)
+    t = by_key(plan)[DB_EDGE]
+    assert [s["path"] for s in [t["sample"], *t["alternates"]]] == [
+        "src/domain/c.ts",
+        "src/domain/b.ts",
+        "src/domain/a.ts",
+    ]
+    return plan, tmp_path / "repo", state.root
+
+
+@pytest.mark.parametrize("field,value", [("forbidden_pattern", "src/**"), ("where", "src/http/**")])
+def test_validate_plan_rejects_an_alternate_that_does_not_match_its_key(tmp_path, field, value):
+    plan, _, _ = _three_sample_plan(tmp_path)
+    schemas = ladder.Schemas(None, b.SCHEMA_DIR)
+    ladder.validate_plan(plan, schemas, "plan.json")
+    plan["transitions"][0]["alternates"][1][field] = value
+    with pytest.raises(ladder.LadderError, match="alternate does not match its key"):
+        ladder.validate_plan(plan, schemas, "plan.json")
+
+
+def test_validate_plan_rejects_alternates_off_a_check_and_more_than_two(tmp_path):
+    plan, _, _ = _three_sample_plan(tmp_path)
+    schemas = ladder.Schemas(None, b.SCHEMA_DIR)
+    t = plan["transitions"][0]
+    too_many = json.loads(json.dumps(plan))
+    too_many["transitions"][0]["alternates"].append(t["sample"])
+    with pytest.raises(ladder.LadderError, match="fails retro-plan.schema.json"):
+        ladder.validate_plan(too_many, schemas, "plan.json")
+    as_pattern = json.loads(json.dumps(plan))
+    as_pattern["transitions"][0].update(
+        to="pattern", reason="emit-fallback", sample=None, text=ladder.fallback_text(DB_EDGE, [1, 2])
+    )
+    with pytest.raises(ladder.LadderError, match="has alternates but is not a check"):
+        ladder.validate_plan(as_pattern, schemas, "plan.json")
+
+
+# A stub emitter that answers per --provenance-path and logs every call.
+_STUB_BY_SAMPLE = '''
+import json, pathlib, sys
+args = sys.argv[1:]
+here = pathlib.Path(__file__).parent
+control = json.loads((here / "control.json").read_text())
+def log(text):
+    with (here / "calls.log").open("a") as fh:
+        fh.write(text + "\\n")
+if "--replay" in args:
+    sys.exit(0)
+if "--retire" in args:
+    log("retire " + args[args.index("--retire") + 1])
+    sys.exit(0)
+root = pathlib.Path(args[args.index("--project-root") + 1])
+rid = args[args.index("--rule-id") + 1]
+path = args[args.index("--provenance-path") + 1]
+finding = json.loads(pathlib.Path(args[args.index("--input") + 1]).read_text())
+assert finding["violation_sample"]["import_line"], "the finding names the sample being tried"
+log("emit " + path)
+code, applied = control.get(path, [0, True])
+fixture = root / "tests" / "fixtures" / "retro" / rid[2:]
+(fixture / ".cadence").mkdir(parents=True, exist_ok=True)
+(fixture / "sample.txt").write_text(path)
+print(json.dumps({"fired": code in (0, 3), "applied": applied, "exit": code}))
+sys.exit(code)
+'''
+
+
+def _stub_by_sample(tmp_path: Path, control: dict) -> Path:
+    stub_dir = tmp_path / "stub-by-sample"
+    stub_dir.mkdir(exist_ok=True)
+    (stub_dir / "control.json").write_text(json.dumps(control), encoding="utf-8")
+    path = stub_dir / "emit_stub.py"
+    path.write_text(_STUB_BY_SAMPLE, encoding="utf-8")
+    return path
+
+
+def _calls(emitter: Path) -> list[str]:
+    log = emitter.parent / "calls.log"
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def _emits(emitter: Path) -> list[str]:
+    return [c.split(" ", 1)[1] for c in _calls(emitter) if c.startswith("emit ")]
+
+
+def test_apply_tries_the_next_sample_when_one_cannot_be_proven(tmp_path):
+    plan, root, state_root = _three_sample_plan(tmp_path)
+    emitter = _stub_by_sample(tmp_path, {"src/domain/c.ts": [1, False], "src/domain/b.ts": [0, True]})
+    rc, applied = _apply(tmp_path, plan, emitter, root, state_root)
+    assert rc == 0
+    assert _emits(emitter) == ["src/domain/c.ts", "src/domain/b.ts"]
+    t = by_key(applied)[DB_EDGE]
+    assert t["to"] == "check" and t["emit"] == {"exit": 0, "fixture": f"tests/fixtures/retro/{DB_LID[2:]}/"}
+    # The sample that landed is the one recorded, and alternates never reach applied.json.
+    assert t["sample"] == by_key(plan)[DB_EDGE]["alternates"][0]
+    assert "alternates" not in t
+    fixture = root / "tests" / "fixtures" / "retro" / DB_LID[2:]
+    assert (fixture / "sample.txt").read_text(encoding="utf-8") == "src/domain/b.ts"
+
+
+def test_apply_falls_back_with_the_last_exit_when_no_sample_lands(tmp_path):
+    plan, root, state_root = _three_sample_plan(tmp_path)
+    config_before = (root / ".cadence" / "cadence.yaml").read_bytes()
+    emitter = _stub_by_sample(
+        tmp_path,
+        {"src/domain/c.ts": [2, False], "src/domain/b.ts": [1, False], "src/domain/a.ts": [1, False]},
+    )
+    rc, applied = _apply(tmp_path, plan, emitter, root, state_root)
+    assert rc == 0
+    assert _emits(emitter) == ["src/domain/c.ts", "src/domain/b.ts", "src/domain/a.ts"]
+    t = by_key(applied)[DB_EDGE]
+    assert (t["to"], t["reason"], t["emit"]) == ("pattern", "emit-fallback", {"exit": 1, "fixture": None})
+    assert "alternates" not in t
+    assert (DB_EDGE, "emit-failed") in needs(applied)
+    assert not (root / "tests" / "fixtures" / "retro" / DB_LID[2:]).exists()
+    assert (root / ".cadence" / "cadence.yaml").read_bytes() == config_before
+
+
+@pytest.mark.parametrize("answer", [[3, False], [0, False]], ids=["fires-on-main", "equivalent-rule"])
+def test_apply_stops_at_a_rule_that_another_sample_cannot_fix(tmp_path, answer):
+    plan, root, state_root = _three_sample_plan(tmp_path)
+    emitter = _stub_by_sample(tmp_path, {"src/domain/c.ts": answer})
+    rc, applied = _apply(tmp_path, plan, emitter, root, state_root)
+    assert rc == 0
+    assert _emits(emitter) == ["src/domain/c.ts"]
+    t = by_key(applied)[DB_EDGE]
+    assert (t["to"], t["emit"]) == ("pattern", {"exit": answer[0], "fixture": None})
+    assert not (root / "tests" / "fixtures" / "retro" / DB_LID[2:]).exists()
+
+
+def test_apply_skips_a_sample_whose_patch_fails_its_checks(tmp_path):
+    plan, root, state_root = _three_sample_plan(tmp_path)
+    (state_root / "patches" / "103-1.patch").write_text("tampered\n", encoding="utf-8")
+    emitter = _stub_by_sample(tmp_path, {})
+    rc, applied = _apply(tmp_path, plan, emitter, root, state_root)
+    assert rc == 0
+    assert _emits(emitter) == ["src/domain/b.ts"]
+    t = by_key(applied)[DB_EDGE]
+    assert t["to"] == "check" and t["sample"]["run"] == "102-1"
+
+
+def test_apply_with_the_real_emitter_lands_the_second_sample(tmp_path, git_env):
+    # `export type` is a strict TS import line (so it can be a sample), but the
+    # checker does not treat it as an import, so its rule does not fire there:
+    # emit exits 1 and apply moves on to the older, plain import.
+    type_line = "export type { Row } from '../db/client';"
+    root = b.make_repo(tmp_path / "repo", env=git_env)
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1, path="src/domain/types.ts", line=type_line)
+    seed(state)
+    plan = make_plan(tmp_path, state)
+    planned = by_key(plan)[DB_EDGE]
+    assert planned["sample"]["import_line"] == type_line
+    assert [a["path"] for a in planned["alternates"]] == ["src/domain/order.ts"]
+    rc, applied = _apply(tmp_path, plan, None, root, state.root)
+    assert rc == 0
+    t = by_key(applied)[DB_EDGE]
+    assert t["to"] == "check" and t["emit"]["exit"] == 0
+    assert t["sample"] == planned["alternates"][0] and "alternates" not in t
+    fixture = root / "tests" / "fixtures" / "retro" / DB_LID[2:]
+    provenance = json.loads((fixture / "provenance.json").read_text(encoding="utf-8"))
+    assert (provenance["path"], provenance["line_no"], provenance["patch_sha256"]) == (
+        t["sample"]["path"],
+        t["sample"]["line_no"],
+        t["sample"]["patch_sha256"],
+    )
+    assert (fixture / "src" / "domain" / "order.ts").is_file()
+    assert not (fixture / "src" / "domain" / "types.ts").exists()
+    assert ladder.main(["guard", "--repo-root", str(root), "--worktree", "--applied", str(tmp_path / "applied.json")]) == 0
+
+
+def test_guard_refuses_an_applied_json_that_still_lists_alternates(tmp_path, git_env, capsys):
+    root, _, applied_path, applied = _landed_check(tmp_path, git_env)
+    t = by_key(applied)[DB_EDGE]
+    t["alternates"] = [dict(t["sample"])]
+    applied_path.write_text(json.dumps(applied), encoding="utf-8")
+    assert ladder.main(["guard", "--repo-root", str(root), "--worktree", "--applied", str(applied_path)]) == 1
+    assert "still lists alternates" in capsys.readouterr().err
+
+
+# --- a plan that failed scripts/verify.sh before (retro/failed/ on cadence/state) ---------------------
+
+
+def _failed_record(state_root: Path, sha: str, **changes) -> Path:
+    """What the workflow's retro-failed job writes (jq -n, pretty JSON)."""
+    record = {
+        "schema": "cadence.retro-failed/1",
+        "plan_sha": sha,
+        "base_sha": BASE,
+        "run_id": "4242",
+        "run_attempt": 1,
+        "recorded_at": "2026-09-11T00:00:00Z",
+        "reason": "verify-failed",
+    }
+    record.update(changes)
+    path = state_root / "retro" / "failed" / f"{sha}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _plan_cli(tmp_path, capsys, root, state, *, base=BASE):
+    out = tmp_path / "plan.json"
+    rc = ladder.main(
+        [
+            "plan", "--state-dir", str(state.root), "--repo-root", str(root), "--base-sha", base,
+            "--now", str(b.epoch(5)), "--out", str(out),
+        ]
+    )  # fmt: skip
+    assert rc == 0
+    captured = capsys.readouterr()
+    return json.loads(captured.out), out.read_bytes(), captured.err
+
+
+def _two_issue_state(tmp_path):
+    root = b.make_repo(tmp_path / "repo")
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1)
+    seed(state)
+    return root, state
+
+
+def test_a_plan_that_failed_before_is_not_proposed_again_until_it_changes(tmp_path, capsys):
+    root, state = _two_issue_state(tmp_path)
+    first, plan_bytes, _ = _plan_cli(tmp_path, capsys, root, state)
+    assert (first["changed"], first["failed_before"]) == (True, False)
+    _failed_record(state.root, first["plan_sha"])
+    again, again_bytes, _ = _plan_cli(tmp_path, capsys, root, state)
+    assert again == dict(first, changed=False, failed_before=True)
+    assert again_bytes == plan_bytes  # plan.json itself is unchanged
+    # A new commit on main is a new plan: it is tried again.
+    moved, _, _ = _plan_cli(tmp_path, capsys, root, state, base="c" * 40)
+    assert moved["plan_sha"] != first["plan_sha"]
+    assert (moved["changed"], moved["failed_before"]) == (True, False)
+    # So is a different proposal (here: one more sample).
+    edge_attempt(state, "103", 3, 2, path="src/domain/invoice.ts")
+    grown, _, _ = _plan_cli(tmp_path, capsys, root, state)
+    assert grown["plan_sha"] != first["plan_sha"]
+    assert (grown["changed"], grown["failed_before"]) == (True, False)
+
+
+def _broken_record(state_root: Path, sha: str, problem: str) -> None:
+    path = state_root / "retro" / "failed" / f"{sha}.json"
+    if problem == "schema":
+        _failed_record(state_root, sha, schema="cadence.retro-failed/2")
+    elif problem == "plan-sha":
+        _failed_record(state_root, sha, plan_sha="f" * 64)
+    elif problem == "too-big":
+        _failed_record(state_root, sha, pad="x" * ladder.MAX_FAILED_RECORD_BYTES)
+    elif problem == "not-json":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+    elif problem == "not-an-object":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([{"schema": "cadence.retro-failed/1", "plan_sha": sha}]), encoding="utf-8")
+    elif problem == "directory":
+        path.mkdir(parents=True)
+    elif problem == "symlink":
+        real = _failed_record(state_root.parent / "elsewhere", sha)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(real, path)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available here")
+    else:
+        raise AssertionError(problem)
+
+
+@pytest.mark.parametrize(
+    "problem", ["schema", "plan-sha", "too-big", "not-json", "not-an-object", "directory", "symlink"]
+)
+def test_an_invalid_failed_record_is_ignored_with_a_warning(tmp_path, capsys, problem):
+    root, state = _two_issue_state(tmp_path)
+    first, _, _ = _plan_cli(tmp_path, capsys, root, state)
+    _broken_record(state.root, first["plan_sha"], problem)
+    again, _, err = _plan_cli(tmp_path, capsys, root, state)
+    assert (again["changed"], again["failed_before"]) == (True, False)
+    assert f"WARN: retro/failed/{first['plan_sha']}.json" in err
+
+
+def test_a_failed_record_for_another_plan_changes_nothing(tmp_path, capsys):
+    root, state = _two_issue_state(tmp_path)
+    _failed_record(state.root, "e" * 64)
+    printed, _, err = _plan_cli(tmp_path, capsys, root, state)
+    assert (printed["changed"], printed["failed_before"]) == (True, False)
+    assert "retro/failed" not in err  # a missing record is no warning
+    assert ladder.failed_before(state.root, "not-a-sha") is False
+
+
+# --- apply --verify-failed: demote the checks, drop test: patterns ----------------------------------
+
+K_UP = b.edge_key("src/domain", "src/b")  # a pattern offered as a check again
+K_OLD = b.edge_key("src/domain", "src/a")  # a check whose fixture no longer fires
+GUARD_KEY = "guarded:tests:modify"
+TEST_KEY = "test:tests/a.test.ts"
+VF_AREAS = ("src/domain", "src/db", "src/http", "src/a", "src/b", "tests")
+
+
+def _commit(root: Path, env) -> None:
+    for args in (
+        ("init", "--quiet"),
+        ("config", "core.autocrlf", "false"),
+        ("config", "commit.gpgsign", "false"),
+        ("add", "-A"),
+        ("commit", "--quiet", "-m", "init"),
+    ):
+        b.git(root, *args, env=env)
+
+
+def _verify_failed_world(tmp_path, env=None):
+    """One plan with every kind of move: two checks (from note and from
+    pattern), a guarded: and a test: pattern, and a check retirement."""
+    up = b.lesson(K_UP, "pattern", since="2026-09-02")
+    old = b.lesson(K_OLD, "check", since="2026-09-05")
+    rules = (b.SEED_RULE, learned_rule(K_OLD))
+    root = b.make_repo(tmp_path / "repo", rules=rules, lessons=[up, old], areas=VF_AREAS)
+    (root / "tests" / "a.test.ts").write_text("// test\n", encoding="utf-8")
+    if env is not None:
+        _commit(root, env)
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1)
+    seed(state)
+    for run, issue, day in (("201", 11, 0), ("202", 12, 1), ("203", 13, 4)):
+        edge_attempt(state, run, issue, day, to="src/b", line="import { b } from '../b/x';")
+    for run, issue in (("301", 21), ("302", 22)):
+        state.observe(
+            b.observation(
+                run, issue, day=2, files=[TEST_FILE],
+                guarded=[{"root": "tests", "op": "modify", "path": "tests/a.test.ts"}],
+                failing_tests=["tests/a.test.ts"],
+            )
+        )  # fmt: skip
+    plan = make_plan(
+        tmp_path, state, lessons=[up, old], rules=rules, areas=VF_AREAS,
+        replay=[{"fixture": ladder.lesson_id(K_OLD)[2:], "rule_id": ladder.lesson_id(K_OLD), "fired": False}],
+    )  # fmt: skip
+    moves = {(t["class_key"], t["from"], t["to"], t["reason"]) for t in plan["transitions"]}
+    assert moves == {
+        (DB_EDGE, "note", "check", "promote"),
+        (K_UP, "pattern", "check", "promote"),
+        (GUARD_KEY, "note", "pattern", "promote"),
+        (TEST_KEY, "note", "pattern", "promote"),
+        (K_OLD, "check", "retired", "broken"),
+    }
+    return plan, root, state.root
+
+
+def _apply_verify_failed(tmp_path, plan, emitter, root, state_root):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    out = tmp_path / "applied.json"
+    args = ["apply", "--plan", str(plan_path), "--repo-root", str(root), "--state-dir", str(state_root)]
+    if emitter is not None:
+        args += ["--emitter", str(emitter)]
+    rc = ladder.main([*args, "--now", str(b.epoch(10)), "--verify-failed", "--out", str(out)])
+    return rc, json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_apply_verify_failed_runs_no_check_emit(tmp_path):
+    plan, root, state_root = _verify_failed_world(tmp_path)
+    emitter = _stub_by_sample(tmp_path, {})
+    rc, applied = _apply_verify_failed(tmp_path, plan, emitter, root, state_root)
+    assert rc == 0
+    # Only the retirement reaches the emitter.
+    assert _calls(emitter) == [f"retire {ladder.lesson_id(K_OLD)}"]
+    assert not (root / "tests" / "fixtures" / "retro").exists()
+
+
+def test_apply_verify_failed_after_a_reset_demotes_and_passes_the_guard(tmp_path, git_env, capsys):
+    plan, root, state_root = _verify_failed_world(tmp_path, git_env)
+    config_before = (root / ".cadence" / "cadence.yaml").read_text(encoding="utf-8")
+    # As the retro-plan job: the first apply, then scripts/verify.sh fails,
+    # then the repo is reset and the same plan.json is applied again.
+    rc, first = _apply(tmp_path, plan, None, root, state_root)
+    assert rc == 0 and first["verify_required"] is True
+    b.git(root, "reset", "--quiet", "--hard", "HEAD", env=git_env)
+    b.git(root, "clean", "-fdq", "--", "tests/fixtures/retro", ".cadence/lessons.yaml", "docs/PATTERNS.md", env=git_env)
+    rc, applied = _apply_verify_failed(tmp_path, plan, None, root, state_root)
+    assert rc == 0
+
+    moves = {(t["class_key"], t["from"], t["to"], t["reason"]) for t in applied["transitions"]}
+    assert moves == {
+        (DB_EDGE, "note", "pattern", "verify-fallback"),
+        (GUARD_KEY, "note", "pattern", "promote"),
+        (K_OLD, "check", "retired", "broken"),
+    }
+    t = by_key(applied)[DB_EDGE]
+    assert (t["sample"], t["emit"]) == (None, None)
+    assert t["text"] == ladder.fallback_text(DB_EDGE, [1, 2])
+    assert not any("alternates" in x for x in applied["transitions"])
+    assert skipped(applied)[K_UP] == "verify-fallback-no-change"
+    assert skipped(applied)[TEST_KEY] == "verify-failed"
+    assert {(DB_EDGE, "verify-failed"), (K_UP, "verify-failed"), (TEST_KEY, "verify-failed")} <= needs(applied)
+    assert (applied["applied"], applied["verify_required"], applied["plan_sha"]) == (True, False, plan["plan_sha"])
+    assert ladder.Schemas(None, b.SCHEMA_DIR).errors("retro-plan.schema.json", applied, required=True) == []
+
+    # No fixture directory, and cadence.yaml changes only by the retirement.
+    assert not (root / "tests" / "fixtures" / "retro").exists()
+    assert yaml.safe_load((root / ".cadence" / "cadence.yaml").read_text(encoding="utf-8")) == yaml.safe_load(
+        b.cadence_yaml([b.SEED_RULE])
+    )
+    assert config_before != (root / ".cadence" / "cadence.yaml").read_text(encoding="utf-8")
+    lessons = yaml.safe_load((root / ".cadence" / "lessons.yaml").read_text(encoding="utf-8"))["lessons"]
+    assert {l["class_key"]: l["rung"] for l in lessons} == {
+        DB_EDGE: "pattern",
+        K_UP: "pattern",
+        GUARD_KEY: "pattern",
+        K_OLD: "retired",
+    }
+    section = ladder.split_section((root / "docs" / "PATTERNS.md").read_text(encoding="utf-8"))[1]
+    assert f"**{DB_LID}** (pattern)" in section
+    assert ladder.main(["guard", "--repo-root", str(root), "--worktree", "--applied", str(tmp_path / "applied.json")]) == 0
+
+    out = tmp_path / "body.md"
+    assert ladder.main(["pr-body", "--applied", str(tmp_path / "applied.json"), "--repo", "octo/app", "--out", str(out)]) == 0
+    body = out.read_text(encoding="utf-8")
+    assert "@" not in body and "<" not in body
+    titles = [line[4:] for line in body.splitlines() if line.startswith("### ")]
+    assert titles == [
+        "Checks", "Patterns", "Demoted after verify failed", "Retired", "Needs a human", "Replay", "Metrics",
+    ]  # fmt: skip
+    demoted = body.split("### Demoted after verify failed\n\n", 1)[1].split("\n\n### ", 1)[0].splitlines()
+    assert demoted == [
+        f"- `{DB_LID}` `{DB_EDGE}`: scripts/verify.sh failed on the retro result with this plan's "
+        "checks in place, so the check is proposed as a pattern.",
+        f"- `{K_UP}`: stays a pattern because scripts/verify.sh failed on the retro result with its check in place.",
+        f"- `{TEST_KEY}`: left out because scripts/verify.sh failed on the retro result.",
+    ]
+    assert "(note -> pattern, verify-fallback)" in body
+
+
+def test_apply_verify_failed_with_nothing_left_exits_1(tmp_path, capsys):
+    state = b.StateDir(tmp_path / "state")
+    edge_attempt(state, "101", 1, 0)
+    edge_attempt(state, "102", 2, 1)
+    edge_attempt(state, "103", 3, 4)
+    seed(state)
+    pattern = b.lesson(DB_EDGE, "pattern", since="2026-09-02")
+    plan = make_plan(tmp_path, state, lessons=[pattern])
+    assert [(t["from"], t["to"]) for t in plan["transitions"]] == [("pattern", "check")]
+    root = tmp_path / "repo"
+    (root / ".cadence" / "lessons.yaml").write_text(ladder.render_lessons([pattern]), encoding="utf-8")
+    lessons_before = (root / ".cadence" / "lessons.yaml").read_bytes()
+    emitter = _stub_by_sample(tmp_path, {})
+    rc, applied = _apply_verify_failed(tmp_path, plan, emitter, root, state.root)
+    assert rc == 1
+    assert _calls(emitter) == []
+    assert applied["transitions"] == []
+    assert {"class_key": DB_EDGE, "why": "verify-fallback-no-change"} in applied["skipped"]
+    assert (DB_EDGE, "verify-failed") in needs(applied)
+    assert (root / ".cadence" / "lessons.yaml").read_bytes() == lessons_before
+    out = tmp_path / "body.md"
+    assert ladder.main(["pr-body", "--applied", str(tmp_path / "applied.json"), "--repo", "octo/app", "--out", str(out)]) == 0
+    assert "### Demoted after verify failed" in out.read_text(encoding="utf-8")
+
+
+def test_the_demoted_section_never_carries_an_at_sign():
+    applied = {
+        "plan_sha": "1" * 64,
+        "transitions": [],
+        "skipped": [
+            {"class_key": "test:tests/@scope/a.test.ts", "why": "verify-failed"},
+            {"class_key": "import-edge:src/@x->src/db", "why": "verify-fallback-no-change"},
+            {"class_key": "guarded:tests:modify", "why": "cap"},
+        ],
+        "needs_human": [],
+        "replay": [],
+    }
+    body = ladder.render_pr_body(applied, "octo/app")
+    assert "@" not in body and "<" not in body
+    demoted = body.split("### Demoted after verify failed\n\n", 1)[1].split("\n\n### ", 1)[0].splitlines()
+    assert demoted == [
+        "- `test:tests/(at)scope/a.test.ts`: left out because scripts/verify.sh failed on the retro result.",
+        "- `import-edge:src/(at)x->src/db`: stays a pattern because scripts/verify.sh failed on the retro "
+        "result with its check in place.",
+    ]
+
+
+def test_capped_lists_keep_what_apply_added():
+    plan_items = [{"class_key": f"test:t{i}", "why": "cap"} for i in range(100)]
+    added = [{"class_key": "test:new", "why": "verify-failed"}]
+    kept = ladder.Applier._capped(plan_items + added, 100, 100)
+    assert len(kept) == 100 and kept[-1] == added[0] and kept[:99] == plan_items[:99]
+    assert ladder.Applier._capped(plan_items[:3] + added, 3, 100) == plan_items[:3] + added

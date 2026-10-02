@@ -18,21 +18,38 @@ Contract:
              ``emit_rule.py --replay`` over the retro fixtures and the L-
              rules over the repo (retirement (a) and (b)), and writes
              plan.json (retro-plan.schema.json). Prints
-             ``{"changed", "plan_sha", "mode", "transitions"}`` where
+             ``{"changed", "plan_sha", "mode", "transitions",
+             "failed_before"}`` where failed_before = the state holds
+             ``retro/failed/<plan_sha>.json`` (see "Failed plans"), and
              changed = mode is on or eval-sandbox, the plan has
-             transitions, and plan_sha differs from --open-plan-sha.
+             transitions, plan_sha differs from --open-plan-sha, and the
+             plan has not failed before.
     apply    python tool/ladder.py apply --plan FILE --repo-root DIR
                  --state-dir DIR [--emitter PATH] [--schema-dir DIR]
-                 [--now EPOCH] --out FILE
-             For each check: ``emit_rule.py --input F --rule-id L-..
-             --class-key K --provenance-patch P --provenance-path PATH
-             --provenance-line N --must-pass-root --apply --json`` (plus
-             --force when the fixture already exists). Exit 1, 2 or 3, or a
-             rule that was not appended, turns the check into a pattern
-             (reason emit-fallback, needs_human emit-failed). For each
-             retired check: ``emit_rule.py --retire L-..``. Then rewrites
+                 [--now EPOCH] [--verify-failed] --out FILE
+             For each check, for its sample and then each of its
+             alternates until one lands: ``emit_rule.py --input F
+             --rule-id L-.. --class-key K --provenance-patch P
+             --provenance-path PATH --provenance-line N --must-pass-root
+             --apply --json`` (plus --force when the fixture already
+             exists). Exit 1 or 2 (or a patch that fails its checks) moves
+             on to the next sample; exit 3 (the rule fires on the repo) or
+             a rule that was not appended (an equivalent one exists) stops.
+             When no sample lands the check becomes a pattern (reason
+             emit-fallback, needs_human emit-failed). The sample that lands
+             is the one applied.json records. For each retired check:
+             ``emit_rule.py --retire L-..``. Then rewrites
              .cadence/lessons.yaml and the learned section of
-             docs/PATTERNS.md, and writes applied.json.
+             docs/PATTERNS.md, and writes applied.json (never with
+             ``alternates``).
+             ``--verify-failed`` (scripts/verify.sh failed on the first
+             apply's result; the workflow resets the repo and applies the
+             same plan again) runs the emitter for no check: a check from
+             note or retired becomes a pattern (reason verify-fallback,
+             fallback text, no sample), a check from pattern is dropped
+             (skipped verify-fallback-no-change), a test: pattern is
+             dropped (skipped verify-failed), each with needs_human
+             verify-failed. Everything else is applied as usual.
     guard    python tool/ladder.py guard --repo-root DIR
                  (--worktree [--base-ref HEAD] | --patch FILE)
                  [--applied FILE] [--schema-dir DIR]
@@ -41,7 +58,9 @@ Contract:
                  [--metrics FILE] [--run-url URL] [--schema-dir DIR] --out FILE
              A PR body of at most 60000 characters built from fixed
              strings, keys, numbers and links only: no excerpts, no "@",
-             no HTML. It ends with the line "cadence retro plan <sha12>".
+             no HTML. A plan applied with --verify-failed gets a
+             "Demoted after verify failed" section after "Patterns". It
+             ends with the line "cadence retro plan <sha12>".
 
 Exit codes:
     plan     0 ok; 2 bad input or an internal error
@@ -67,6 +86,8 @@ The ladder (all counts recomputed from cadence/state; nothing is stored):
       rule covers and that has a sample (the newest occurrence with a
       stored patch and a strict import line in TS/JS, Python or Dart)
       becomes a check; everything else with a template becomes a pattern.
+      A check carries up to 3 samples (``sample`` plus ``alternates``):
+      distinct by (path, import line), newest occurrence first.
       A pattern edge that recurs after its promotion is offered as a check.
     - A retired class re-promotes only on occurrences after its retirement
       date (hysteresis). One that was retired twice is pinned when it comes
@@ -104,7 +125,8 @@ Guard (exit 1 on any of these):
     - docs/PATTERNS.md changes outside the learned section, or a section
       that is not exactly what lessons.yaml renders;
     - a lessons.yaml that fails lessons.schema.json or its id rules;
-    - an applied.json that fails retro-plan.schema.json;
+    - an applied.json that fails retro-plan.schema.json, or that still
+      lists alternates;
     - a patch over 256 KiB.
     ``--worktree`` compares the working tree (tracked and untracked, as
     ``git add -A`` would stage it, through a temporary index) with
@@ -112,6 +134,19 @@ Guard (exit 1 on any of these):
     .cadence/.last_verify_sha and .cadence/last_verify.log. ``--patch``
     applies the patch with ``git apply --index`` in a temporary detached
     worktree of HEAD, checks it there, and always removes the worktree.
+
+Failed plans:
+    When scripts/verify.sh fails on a retro result even with every check
+    demoted, the workflow's retro-failed job records
+    ``retro/failed/<plan_sha>.json`` on cadence/state:
+    ``{"schema": "cadence.retro-failed/1", "plan_sha", "base_sha",
+    "run_id", "run_attempt", "recorded_at", "reason": "verify-failed"}``.
+    ``plan`` reads that one path directly (it is not part of
+    STATE_PATH_RE): a regular file of at most 4096 bytes whose schema and
+    plan_sha match marks the plan as failed_before, and changed is then
+    false. Anything else there is ignored with a warning. plan_sha covers
+    base_sha and the transitions (class key, rung, reason, samples), so a
+    new commit on main or a different proposal is tried again.
 
 Design notes:
     - State files are read only when their path matches STATE_PATH_RE and
@@ -287,6 +322,7 @@ NEEDS_WHY = (
     "unsupported-language",
     "emit-failed",
     "regressed",
+    "verify-failed",
 )
 RETIRE_REASONS = ("broken", "blocks-merged-code", "stale", "dormant", "cap", "human-removed")
 # Lower is more urgent: the order retirements are kept under the cap.
@@ -311,6 +347,11 @@ CHECK_DORMANT_ATTEMPTS = 100
 CHECK_DORMANT_DAYS = 90
 PATTERN_DORMANT_ATTEMPTS = 40
 PATTERN_DORMANT_DAYS = 45
+MAX_SAMPLES = 3  # a check's sample plus at most 2 alternates
+FAILED_PLAN_SCHEMA = "cadence.retro-failed/1"
+MAX_FAILED_RECORD_BYTES = 4096
+# skipped[].why of the entries a --verify-failed apply adds.
+VERIFY_SKIP_WHY = ("verify-failed", "verify-fallback-no-change")
 
 LESSONS_HEADER = (
     "# Generated by tool/ladder.py from factory runs. Change it through the "
@@ -1486,9 +1527,10 @@ class Candidate:
     text: str | None = None
     sample: dict[str, Any] | None = None
     needs: str | None = None
+    alternates: list[dict[str, Any]] = field(default_factory=list)
 
     def transition(self) -> dict[str, Any]:
-        return {
+        out = {
             "lesson_id": lesson_id(self.key),
             "class_key": self.key,
             "from": self.from_rung,
@@ -1501,28 +1543,34 @@ class Candidate:
             "sample": self.sample,
             "emit": None,
         }
+        if self.alternates:
+            out["alternates"] = list(self.alternates)
+        return out
+
+
+def _sample_ref(sample: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "patch_sha256": sample["patch_sha256"],
+        "path": sample["path"],
+        "line_no": sample["line_no"],
+    }
 
 
 def plan_sha(base_sha: str, transitions: Sequence[dict[str, Any]]) -> str:
     items = []
     for t in transitions:
         sample = t.get("sample")
-        items.append(
-            {
-                "class_key": t["class_key"],
-                "to": t["to"],
-                "reason": t["reason"],
-                "sample": (
-                    {
-                        "patch_sha256": sample["patch_sha256"],
-                        "path": sample["path"],
-                        "line_no": sample["line_no"],
-                    }
-                    if sample
-                    else None
-                ),
-            }
-        )
+        item: dict[str, Any] = {
+            "class_key": t["class_key"],
+            "to": t["to"],
+            "reason": t["reason"],
+            "sample": _sample_ref(sample) if sample else None,
+        }
+        # Only a transition with alternates gains the key, so the sha of
+        # every plan without them is what it was before alternates existed.
+        if t.get("alternates"):
+            item["alternates"] = [_sample_ref(s) for s in t["alternates"]]
+        items.append(item)
     items.sort(key=lambda d: (d["to"], d["class_key"]))
     payload = json.dumps({"base_sha": base_sha, "transitions": items}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1744,12 +1792,21 @@ class Planner:
             if a.completed_at.date() >= since and is_exposed(a.obs, key)
         ]
 
-    def find_sample(self, key: str) -> tuple[dict[str, Any] | None, str]:
+    def find_samples(self, key: str) -> tuple[list[dict[str, Any]], str]:
+        """Up to MAX_SAMPLES samples for a check on ``key``, newest occurrence first.
+
+        Each is a strict import line in a supported language with a stored
+        patch, distinct by (path, import line). ``apply`` tries them in
+        order. An empty list comes with why: emit-failed (a line but no
+        usable patch or glob) or unsupported-language (no line at all).
+        """
         frm, to = parse_edge_key(key) or (".", ".")
         where, forbidden = f"{frm}/**", f"{to}/**"
         if frm == "." or to == "." or not (_glob_ok(where) and _glob_ok(forbidden)):
-            return None, "emit-failed"
+            return [], "emit-failed"
         has_line = False
+        samples: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
         for occ in sorted(self.occ_all.get(key, []), key=_occ_sort_key, reverse=True):
             attempt = occ.attempt
             edges = sorted((e for e in attempt.obs.edges if e.key == key), key=lambda e: (e.path, e.line_no))
@@ -1762,24 +1819,30 @@ class Planner:
                 if not line_ok(LANG_FAMILY[ext], edge.line):
                     continue
                 has_line = True
-                for run in attempt.runs:
-                    rel = f"patches/{run}.patch"
-                    if rel in self.state.patches:
-                        return (
-                            {
-                                "run": run,
-                                "patch": rel,
-                                "patch_sha256": attempt.obs.patch_sha256,
-                                "path": edge.path,
-                                "line_no": edge.line_no,
-                                "import_line": edge.line,
-                                "language": SAMPLE_LANGUAGE[ext],
-                                "where": where,
-                                "forbidden_pattern": forbidden,
-                            },
-                            "",
-                        )
-        return None, ("emit-failed" if has_line else "unsupported-language")
+                if (edge.path, edge.line) in seen:
+                    continue
+                run = next((r for r in attempt.runs if f"patches/{r}.patch" in self.state.patches), None)
+                if run is None:
+                    continue
+                seen.add((edge.path, edge.line))
+                samples.append(
+                    {
+                        "run": run,
+                        "patch": f"patches/{run}.patch",
+                        "patch_sha256": attempt.obs.patch_sha256,
+                        "path": edge.path,
+                        "line_no": edge.line_no,
+                        "import_line": edge.line,
+                        "language": SAMPLE_LANGUAGE[ext],
+                        "where": where,
+                        "forbidden_pattern": forbidden,
+                    }
+                )
+                if len(samples) == MAX_SAMPLES:
+                    return samples, ""
+        if samples:
+            return samples, ""
+        return [], ("emit-failed" if has_line else "unsupported-language")
 
     def make(self, key: str, from_rung: str, to: str, reason: str, occs: Sequence[Occurrence], **extra: Any) -> Candidate:
         return Candidate(
@@ -1806,10 +1869,13 @@ class Planner:
                 return self.make(key, from_rung, "pattern", "promote", occs, text=fallback, needs="package-edge")
             if self.covered_by_seed(key):
                 return self.make(key, from_rung, "pattern", "promote", occs, text=fallback)
-            sample, why = self.find_sample(key)
-            if sample is None:
+            samples, why = self.find_samples(key)
+            if not samples:
                 return self.make(key, from_rung, "pattern", "emit-fallback", occs, text=fallback, needs=why)
-            return self.make(key, from_rung, "check", "promote", occs, text=check_text(key, issues), sample=sample)
+            return self.make(
+                key, from_rung, "check", "promote", occs,
+                text=check_text(key, issues), sample=samples[0], alternates=samples[1:],
+            )  # fmt: skip
         if fam == "test" and self.stale(key):
             self.skip(key, "stale")
             return None
@@ -1864,11 +1930,16 @@ class Planner:
         if rejected and not self.cooled(occs, rejected[-1].at):
             self.skip(key, "cooldown")
             return
-        sample, _ = self.find_sample(key)
-        if sample is None:
+        samples, _ = self.find_samples(key)
+        if not samples:
             return
         issues = self.issues5(occs)
-        self.checks.append(self.make(key, "pattern", "check", "promote", occs, text=check_text(key, issues), sample=sample))
+        self.checks.append(
+            self.make(
+                key, "pattern", "check", "promote", occs,
+                text=check_text(key, issues), sample=samples[0], alternates=samples[1:],
+            )
+        )  # fmt: skip
 
     # -- retirement --
 
@@ -2081,6 +2152,46 @@ def plan_changed(plan: dict[str, Any], open_plan_sha: str | None) -> bool:
     )
 
 
+def failed_before(state_dir: Path, sha: str) -> bool:
+    """True if cadence/state records that the plan ``sha`` failed scripts/verify.sh.
+
+    Reads ``retro/failed/<sha>.json`` by its direct path only (see "Failed
+    plans"). A missing record is silently False; one that is a symlink,
+    not a regular file, over MAX_FAILED_RECORD_BYTES, not JSON, or not
+    ``{"schema": "cadence.retro-failed/1", "plan_sha": sha, ...}`` is False
+    with a warning, so a broken record can never stop the ladder for good.
+    """
+    if not _SHA256.fullmatch(sha):
+        return False
+    rel = f"retro/failed/{sha}.json"
+    path = state_dir / "retro" / "failed" / f"{sha}.json"
+
+    def ignored(why: str) -> bool:
+        print(f"WARN: {rel} on cadence/state is ignored: {why}", file=sys.stderr)
+        return False
+
+    try:
+        for part in (state_dir / "retro", state_dir / "retro" / "failed", path):
+            if part.is_symlink():
+                return ignored(f"{part.name} is a symlink")
+            if not part.exists():
+                return False
+        if not path.is_file():
+            return ignored("not a regular file")
+        with path.open("rb") as fh:
+            data = fh.read(MAX_FAILED_RECORD_BYTES + 1)
+        if len(data) > MAX_FAILED_RECORD_BYTES:
+            return ignored(f"larger than {MAX_FAILED_RECORD_BYTES} bytes")
+        raw = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return ignored(f"unreadable ({str(exc)[:120]})")
+    if not isinstance(raw, dict) or raw.get("schema") != FAILED_PLAN_SCHEMA:
+        return ignored(f"not a {FAILED_PLAN_SCHEMA} record")
+    if raw.get("plan_sha") != sha:
+        return ignored("its plan_sha does not match its name")
+    return True
+
+
 # --- PATTERNS.md section ------------------------------------------------------------------
 
 
@@ -2202,9 +2313,12 @@ def render_lessons(lessons: Sequence[dict[str, Any]]) -> str:
     return LESSONS_HEADER + body
 
 
-def _finding_for(transition: dict[str, Any], now: float) -> dict[str, Any]:
+def _finding_for(
+    transition: dict[str, Any], now: float, sample: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The finding emit_rule.py proves for ``sample`` (default: the transition's)."""
     key = transition["class_key"]
-    sample = transition["sample"]
+    sample = sample if sample is not None else transition["sample"]
     frm, to = parse_edge_key(key) or ("?", "?")
     issues = transition["issues"] or [1]
     return {
@@ -2275,6 +2389,7 @@ class Applier:
         schema_dir: Path | None,
         schemas: Schemas,
         now: float,
+        verify_failed: bool = False,
     ) -> None:
         self.plan = plan
         self.root = root
@@ -2283,9 +2398,12 @@ class Applier:
         self.schema_dir = schema_dir
         self.schemas = schemas
         self.now = now
+        self.verify_failed = verify_failed
         self.today = to_utc(now).date().isoformat()
         self.skipped = list(plan["skipped"])
         self.needs = list(plan["needs_human"])
+        self._plan_skipped = len(self.skipped)
+        self._plan_needs = len(self.needs)
 
     def need(self, key: str, why: str) -> None:
         item = {"key": key, "why": why}
@@ -2293,7 +2411,14 @@ class Applier:
             self.needs.append(item)
 
     def emit_check(self, t: dict[str, Any], workdir: Path) -> dict[str, Any] | None:
-        """Run the check proof. Returns the transition to keep (maybe a fallback) or None."""
+        """Run the check proof on the sample, then on each alternate until one lands.
+
+        Returns the transition to keep (the landed sample, or a pattern
+        fallback) or None. Exit 1 or 2, or a patch that fails its checks,
+        moves on to the next sample; exit 3 (the rule fires on the repo) or
+        exit 0 without the rule appended (an equivalent rule exists) stops,
+        since another sample of the same rule cannot change that.
+        """
         key, lid = t["class_key"], t["lesson_id"]
         fixture_rel = f"{RETRO_FIXTURE_PREFIX}{lid[2:]}/"
         fixture_dir = self.root / fixture_rel
@@ -2303,58 +2428,105 @@ class Applier:
         if existed:
             shutil.copytree(fixture_dir, backup)
         config_before = _snapshot(config)
+
+        def put_back() -> None:
+            # Leave the repo as it was: no new fixture, the old one back, cadence.yaml as before.
+            if fixture_dir.exists() and (not existed or backup.exists()):
+                shutil.rmtree(fixture_dir)
+            if existed and backup.exists():
+                shutil.copytree(backup, fixture_dir)
+            _restore(config, config_before)
+
+        candidates = [t["sample"], *(t.get("alternates") or [])][:MAX_SAMPLES]
         code: int = 2
-        landed = False
-        try:
-            patch = _validated_patch(self.state_dir, t["sample"])
-            finding = workdir / f"finding-{lid}.json"
-            _write_json(finding, _finding_for(t, self.now))
-            args = [
-                "--input", str(finding),
-                "--project-root", str(self.root),
-                "--rule-id", lid,
-                "--class-key", key,
-                "--provenance-patch", str(patch),
-                "--provenance-path", t["sample"]["path"],
-                "--provenance-line", str(t["sample"]["line_no"]),
-                "--must-pass-root",
-                "--apply",
-                "--json",
-                "--now", str(int(self.now)),
-            ]  # fmt: skip
-            if existed:
-                args.append("--force")
-            if self.schema_dir is not None:
-                args += ["--schema-dir", str(self.schema_dir)]
-            code, payload = run_emitter(self.emitter, args)
-            landed = (
-                code == 0
-                and payload is not None
-                and payload.get("fired") is True
-                and payload.get("applied") is True
-            )
-        except (OSError, ValueError) as exc:
-            print(f"WARN: check {lid} for {key} not emitted: {exc}", file=sys.stderr)
-        if landed:
-            t = dict(t)
-            t["emit"] = {"exit": 0, "fixture": fixture_rel}
-            return t
-        # Leave the repo as it was: no new fixture, the old one back, cadence.yaml as before.
-        if fixture_dir.exists() and (not existed or backup.exists()):
-            shutil.rmtree(fixture_dir)
-        if existed and backup.exists():
-            shutil.copytree(backup, fixture_dir)
-        _restore(config, config_before)
+        for number, sample in enumerate(candidates, 1):
+            landed = False
+            stop = False
+            try:
+                patch = _validated_patch(self.state_dir, sample)
+                finding = workdir / f"finding-{lid}.json"
+                _write_json(finding, _finding_for(t, self.now, sample))
+                args = [
+                    "--input", str(finding),
+                    "--project-root", str(self.root),
+                    "--rule-id", lid,
+                    "--class-key", key,
+                    "--provenance-patch", str(patch),
+                    "--provenance-path", sample["path"],
+                    "--provenance-line", str(sample["line_no"]),
+                    "--must-pass-root",
+                    "--apply",
+                    "--json",
+                    "--now", str(int(self.now)),
+                ]  # fmt: skip
+                if existed:
+                    args.append("--force")
+                if self.schema_dir is not None:
+                    args += ["--schema-dir", str(self.schema_dir)]
+                code, payload = run_emitter(self.emitter, args)
+                landed = (
+                    code == 0
+                    and payload is not None
+                    and payload.get("fired") is True
+                    and payload.get("applied") is True
+                )
+                stop = not landed and code not in (1, 2)
+            except (OSError, ValueError) as exc:
+                code = 2
+                print(f"WARN: check {lid} for {key}, sample {number}: not emitted: {exc}", file=sys.stderr)
+            if landed:
+                t = dict(t)
+                t["sample"] = sample
+                t.pop("alternates", None)
+                t["emit"] = {"exit": 0, "fixture": fixture_rel}
+                return t
+            put_back()
+            if stop:
+                break
+            if number < len(candidates):
+                print(
+                    f"WARN: check {lid} for {key}: sample {number} not proven (exit {code}); trying the next",
+                    file=sys.stderr,
+                )
         self.need(key, "emit-failed")
         if t["from"] == "pattern":
             self.skipped.append({"class_key": key, "why": "emit-fallback-no-change"})
             return None
         t = dict(t)
+        t.pop("alternates", None)
         t["to"] = "pattern"
         t["reason"] = "emit-fallback"
         t["text"] = fallback_text(key, t["issues"])
         t["emit"] = {"exit": code, "fixture": None}
         return t
+
+    def demote_check(self, t: dict[str, Any]) -> dict[str, Any] | None:
+        """--verify-failed: no emit. A new check is proposed as a pattern instead."""
+        key = t["class_key"]
+        self.need(key, "verify-failed")
+        if t["from"] == "pattern":
+            self.skipped.append({"class_key": key, "why": "verify-fallback-no-change"})
+            return None
+        t = dict(t)
+        t.pop("alternates", None)
+        t["to"] = "pattern"
+        t["reason"] = "verify-fallback"
+        t["text"] = fallback_text(key, t["issues"])
+        t["sample"] = None
+        t["emit"] = None
+        return t
+
+    def drop_test_pattern(self, t: dict[str, Any]) -> None:
+        """--verify-failed: a test: pattern rests on the test passing on main,
+        which is what scripts/verify.sh just failed to show."""
+        self.skipped.append({"class_key": t["class_key"], "why": "verify-failed"})
+        self.need(t["class_key"], "verify-failed")
+
+    @staticmethod
+    def _capped(items: list[dict[str, str]], from_plan: int, limit: int) -> list[dict[str, str]]:
+        """At most ``limit`` items, keeping every one this apply added."""
+        added = items[from_plan:][:limit]
+        return items[: max(0, min(from_plan, limit - len(added)))] + added
 
     def retire_check(self, t: dict[str, Any]) -> dict[str, Any] | None:
         lid = t["lesson_id"]
@@ -2380,13 +2552,18 @@ class Applier:
         with tempfile.TemporaryDirectory(prefix="cadence-ladder-") as tmp:
             workdir = Path(tmp)
             for t in self.plan["transitions"]:
+                result: dict[str, Any] | None
                 if t["to"] == "check":
-                    result = self.emit_check(t, workdir)
+                    result = self.demote_check(t) if self.verify_failed else self.emit_check(t, workdir)
+                elif self.verify_failed and t["to"] == "pattern" and family_of(t["class_key"]) == "test":
+                    self.drop_test_pattern(t)
+                    result = None
                 elif t["to"] == "retired" and t["from"] == "check" and t["reason"] != "human-removed":
                     result = self.retire_check(t)
                 else:
                     result = dict(t)
                 if result is not None:
+                    result.pop("alternates", None)
                     kept.append(result)
 
         for t in kept:
@@ -2414,8 +2591,8 @@ class Applier:
         applied = dict(self.plan)
         applied["applied"] = True
         applied["transitions"] = sorted(kept, key=lambda t: (_TO_ORDER[t["to"]], t["class_key"]))
-        applied["skipped"] = self.skipped[:100]
-        applied["needs_human"] = self.needs[:50]
+        applied["skipped"] = self._capped(self.skipped, self._plan_skipped, 100)
+        applied["needs_human"] = self._capped(self.needs, self._plan_needs, 50)
         applied["verify_required"] = any(
             (t["to"] == "check" and (t.get("emit") or {}).get("exit") == 0)
             or (t["to"] == "pattern" and family_of(t["class_key"]) == "test")
@@ -2438,15 +2615,19 @@ def validate_plan(plan: Any, schemas: Schemas, what: str) -> dict[str, Any]:
             raise LadderError(f"{what}: {t['class_key']} has the wrong lesson id")
         if family_of(t["class_key"]) not in HEADLINE_FAMILIES:
             raise LadderError(f"{what}: {t['class_key']} is not a headline class")
+        alternates = t.get("alternates")
+        if alternates is not None and t["to"] != "check":
+            raise LadderError(f"{what}: {t['class_key']} has alternates but is not a check")
         if t["to"] == "check":
             parsed = parse_edge_key(t["class_key"])
             sample = t["sample"]
             if parsed is None or sample is None:
                 raise LadderError(f"{what}: check {t['class_key']} needs an edge key and a sample")
-            if sample["where"] != f"{parsed[0]}/**" or sample["forbidden_pattern"] != f"{parsed[1]}/**":
-                raise LadderError(f"{what}: check {t['class_key']} sample does not match its key")
-            if not (_glob_ok(sample["where"]) and _glob_ok(sample["forbidden_pattern"])):
-                raise LadderError(f"{what}: check {t['class_key']} has an unsafe glob")
+            for label, one in [("sample", sample), *(("alternate", a) for a in alternates or [])]:
+                if one["where"] != f"{parsed[0]}/**" or one["forbidden_pattern"] != f"{parsed[1]}/**":
+                    raise LadderError(f"{what}: check {t['class_key']} {label} does not match its key")
+                if not (_glob_ok(one["where"]) and _glob_ok(one["forbidden_pattern"])):
+                    raise LadderError(f"{what}: check {t['class_key']} has an unsafe glob")
     return plan
 
 
@@ -2926,6 +3107,22 @@ def render_pr_body(
     checks = [line(t) for t in transitions if t["to"] == "check"]
     patterns = [line(t) for t in transitions if t["to"] == "pattern"]
     removed = [line(t) for t in transitions if t["to"] in ("retired", "suppressed")]
+    demoted = [
+        f"- `{t['lesson_id']}` `{_safe_key(t['class_key'])}`: scripts/verify.sh failed on the retro "
+        "result with this plan's checks in place, so the check is proposed as a pattern."
+        for t in transitions
+        if t["reason"] == "verify-fallback"
+    ]
+    for s in applied["skipped"]:
+        if s["why"] == "verify-failed":
+            demoted.append(
+                f"- `{_safe_key(s['class_key'])}`: left out because scripts/verify.sh failed on the retro result."
+            )
+        elif s["why"] == "verify-fallback-no-change":
+            demoted.append(
+                f"- `{_safe_key(s['class_key'])}`: stays a pattern because scripts/verify.sh failed on "
+                "the retro result with its check in place."
+            )
     needs = [f"- `{_safe_key(n['key'])}`: {n['why']}" for n in applied["needs_human"]]
     replay = [
         f"- `{r['fixture']}` ({r['rule_id'] or 'no rule id'}): {'fires' if r['fired'] else 'DOES NOT FIRE'}"
@@ -2942,6 +3139,8 @@ def render_pr_body(
         lines += ["", f"Run: {run_url}"]
     lines += section("Checks", checks)
     lines += section("Patterns", patterns)
+    if demoted:
+        lines += section("Demoted after verify failed", demoted)
     lines += section("Retired", removed)
     lines += section("Needs a human", needs)
     lines += section("Replay", replay)
@@ -2991,6 +3190,11 @@ def _build_parser() -> argparse.ArgumentParser:
     app.add_argument("--emitter", type=Path)
     app.add_argument("--schema-dir", type=Path)
     app.add_argument("--now", type=_finite)
+    app.add_argument(
+        "--verify-failed",
+        action="store_true",
+        help="scripts/verify.sh failed on this plan's result: emit no check, demote them instead",
+    )
     app.add_argument("--out", type=Path, required=True)
 
     grd = sub.add_parser("guard", help="refuse a retro change outside its allowlist")
@@ -3030,13 +3234,21 @@ def _cmd_plan(args: argparse.Namespace, now: float) -> int:
     plan = compute_plan(settings, state, repo, base_sha=base_sha, now=now)
     validate_plan(plan, schemas, "plan.json")
     _write_json(args.out, plan)
+    failed = failed_before(args.state_dir, plan["plan_sha"])
+    if failed:
+        print(
+            f"plan {plan['plan_sha'][:12]} failed scripts/verify.sh before "
+            f"(retro/failed/ on cadence/state); not proposed again until main or the plan changes",
+            file=sys.stderr,
+        )
     print(
         json.dumps(
             {
-                "changed": plan_changed(plan, open_sha),
+                "changed": plan_changed(plan, open_sha) and not failed,
                 "plan_sha": plan["plan_sha"],
                 "mode": plan["mode"],
                 "transitions": len(plan["transitions"]),
+                "failed_before": failed,
             }
         )
     )
@@ -3056,6 +3268,7 @@ def _cmd_apply(args: argparse.Namespace, now: float) -> int:
         schema_dir=args.schema_dir.resolve() if args.schema_dir else None,
         schemas=schemas,
         now=now,
+        verify_failed=args.verify_failed,
     )
     applied, code = applier.run()
     _write_json(args.out, applied)
@@ -3074,6 +3287,9 @@ def _cmd_guard(args: argparse.Namespace) -> int:
         applied = validate_plan(_read_json(args.applied), schemas, str(args.applied))
         if applied["applied"] is not True:
             print("guard: applied.json is a plan that was never applied", file=sys.stderr)
+            return EXIT_VIOLATION
+        if any("alternates" in t for t in applied["transitions"]):
+            print("guard: applied.json still lists alternates; apply records only the sample that landed", file=sys.stderr)
             return EXIT_VIOLATION
     if args.patch is not None and not args.patch.is_file():
         raise LadderError(f"--patch {args.patch} not found")

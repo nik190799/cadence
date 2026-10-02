@@ -6,15 +6,25 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read the code, nothing else. A job that needs more asks for it itself.
+permissions:
+  contents: read
+
+# Every action is pinned to a full commit SHA, with its tag as a comment: a
+# tag can be moved, a SHA cannot. To update a pin, resolve the new tag with
+#     gh api repos/<owner>/<repo>/commits/<tag> --jq .sha
+# or let Dependabot propose it (`package-ecosystem: github-actions` in
+# .github/dependabot.yml).
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python (for boundary checker)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -25,14 +35,14 @@ jobs:
       # Replace this block with your stack's runtime setup.
       # Examples (uncomment what applies):
       # ---------------------------------------------------------------
-      # - uses: actions/setup-node@v4
+      # - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       #   with: { node-version: '20' }
       # - run: npm ci
       #
-      # - uses: actions/setup-go@v5
+      # - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       #   with: { go-version: '1.22' }
       #
-      # - uses: subosito/flutter-action@v2
+      # - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
       #   with: { channel: 'stable' }
       # - run: flutter pub get
       #

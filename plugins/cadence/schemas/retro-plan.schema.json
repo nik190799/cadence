@@ -65,7 +65,8 @@
               "package-edge",
               "unsupported-language",
               "emit-failed",
-              "regressed"
+              "regressed",
+              "verify-failed"
             ]
           }
         }
@@ -173,6 +174,7 @@
           "enum": [
             "promote",
             "emit-fallback",
+            "verify-fallback",
             "broken",
             "blocks-merged-code",
             "stale",
@@ -200,6 +202,13 @@
         },
         "sample": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sample" }]
+        },
+        "alternates": {
+          "description": "Further samples apply tries, in order, when the check cannot be proven on sample. Only in plan.json; applied.json never has it.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/sample" }
         },
         "emit": {
           "oneOf": [
