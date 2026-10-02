@@ -157,3 +157,13 @@ not covered here, the retrospective process
 
 Every change lands together with an entry in
 [FRAMEWORK_CHANGELOG.md](./FRAMEWORK_CHANGELOG.md).
+
+In factory mode the learning loop also proposes lessons, as one retro PR
+that a human merges. It writes only the section below (never the sections
+above), and its changelog is `.cadence/lessons.yaml` plus the PR body.
+Keep the section last in this file, and do not edit it by hand: the next
+retro PR rewrites it.
+
+## Learned patterns (factory)
+
+Generated from factory runs by `tool/ladder.py`; change it through the retro PR. See docs/LEARNING.md.

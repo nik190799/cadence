@@ -672,3 +672,266 @@ def test_cli_uses_default_paths_relative_to_cwd(project):
 
     proc = run("check", "--now", str(NOON + 24 * 3600))
     assert proc.returncode == 0, proc.stderr
+
+
+# --- 8. Learning loop: record flags, learn records, the learn pool ----------
+
+PUB_SHA = "a" * 40
+BASE_SHA = "b" * 40
+
+
+def test_record_new_flags_are_written_only_when_given(project):
+    assert (
+        _record(
+            project,
+            "--cost-usd", "1",
+            "--stage", "build",
+            "--pr", "12",
+            "--published-sha", PUB_SHA,
+            "--base-sha", BASE_SHA,
+        )
+        == 0
+    )
+    record = _read_record(project)
+    assert record["stage"] == "build"
+    assert record["pr"] == 12
+    assert record["published_sha"] == PUB_SHA
+    assert record["base_sha"] == BASE_SHA
+    assert record["issue"] == 7
+
+    assert _record(project, "--cost-usd", "1", "--stage", "spec", attempt=2) == 0
+    record = _read_record(project, attempt=2)
+    assert record["stage"] == "spec"
+    assert not {"pr", "published_sha", "base_sha"} & set(record)
+
+
+def test_learn_record_names_no_issue(project):
+    rc = _main(
+        project,
+        "record",
+        "--stage", "learn",
+        "--run-id", "300",
+        "--run-attempt", "1",
+        "--outcome", "success",
+        "--dod", "skipped",
+        "--cost-usd", "0.12",
+        "--now", str(NOON),
+    )
+    assert rc == 0
+    record = _read_record(project, "300")
+    assert record["issue"] is None
+    assert record["stage"] == "learn"
+    assert record["booked_usd"] == 0.12
+
+
+def test_issue_is_required_unless_learn(project, capsys):
+    rc = _main(
+        project,
+        "record",
+        "--run-id", "301",
+        "--run-attempt", "1",
+        "--outcome", "success",
+        "--now", str(NOON),
+    )
+    assert rc == 2
+    assert "--issue is required" in capsys.readouterr().err
+    assert not (_records(project) / "301-1.json").exists()
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--published-sha", "A" * 40],
+        ["--published-sha", "a" * 39],
+        ["--base-sha", "not-a-sha"],
+        ["--pr", "0"],
+        ["--stage", "deploy"],
+    ],
+)
+def test_bad_new_record_flags_exit_2(project, flags):
+    with pytest.raises(SystemExit) as exc_info:
+        _record(project, "--cost-usd", "1", *flags)
+    assert exc_info.value.code == 2
+
+
+LEARN_CONFIG = """\
+budget:
+  per_run_usd: 5.00
+  daily_usd: 25.00
+learning:
+  budget:
+    per_run_usd: 0.50
+    daily_usd: 1.00
+"""
+
+
+def _learn_check(project: Path, capsys, *, in_flight: int = 0):
+    capsys.readouterr()
+    rc = _main(
+        project, "check", "--pool", "learn", "--in-flight", str(in_flight), "--now", str(NOON)
+    )
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def _learn_record(project: Path, run_id: str, cost: str) -> None:
+    rc = _main(
+        project,
+        "record",
+        "--stage", "learn",
+        "--run-id", run_id,
+        "--run-attempt", "1",
+        "--outcome", "success",
+        "--cost-usd", cost,
+        "--now", str(NOON),
+    )
+    assert rc == 0
+
+
+def test_unreported_learn_cost_is_booked_at_the_learn_cap(project, capsys):
+    # classify runs under learning.budget.per_run_usd, so a learn run that
+    # reports no cost is booked at that cap, not the $5 build cap (which
+    # would empty the learn pool and a build's worth of the daily budget).
+    (project / ".cadence" / "factory.yaml").write_text(LEARN_CONFIG, encoding="utf-8")
+    rc = _main(
+        project,
+        "record",
+        "--stage", "learn",
+        "--run-id", "l9",
+        "--run-attempt", "1",
+        "--outcome", "failure",
+        "--dod", "skipped",
+        "--now", str(NOON),
+    )
+    assert rc == 0
+    record = _read_record(project, "l9")
+    assert record["cost_source"] == "cap"
+    assert record["booked_usd"] == 0.5
+    assert record["per_run_cap_usd"] == 0.5
+    rc, report = _learn_check(project, capsys)  # 0.50 + 0.50 <= 1.00
+    assert rc == 0
+    assert report["learn_spent_today"] == pytest.approx(0.5)
+    # A build record with no cost still books the build cap.
+    assert _record(project, run_id="b9") == 0
+    assert _read_record(project, "b9")["booked_usd"] == 5.0
+
+
+def test_learn_pool_caps_learn_spend(project, capsys):
+    (project / ".cadence" / "factory.yaml").write_text(LEARN_CONFIG, encoding="utf-8")
+    rc, report = _learn_check(project, capsys)
+    assert rc == 0
+    assert report["pool"] == "learn"
+    assert report["learn_spent_today"] == 0.0
+    assert report["learn_per_run_usd"] == 0.5
+    assert report["learn_daily_usd"] == 1.0
+    assert report["worst_case"] == 0.5
+
+    _learn_record(project, "l1", "0.40")
+    rc, report = _learn_check(project, capsys)  # 0.40 + 0.50 <= 1.00
+    assert rc == 0
+    _learn_record(project, "l2", "0.20")
+    rc, report = _learn_check(project, capsys)  # 0.60 + 0.50 > 1.00
+    assert rc == 1
+    assert report["learn_spent_today"] == pytest.approx(0.6)
+    assert report["allowed"] is False
+
+    # Build records count toward the global cap only.
+    assert _record(project, "--cost-usd", "3", run_id="b1") == 0
+    assert _check(project, capsys)[1]["spent_today"] == pytest.approx(3.6)
+
+
+def test_learn_pool_respects_the_global_cap(project, capsys):
+    (project / ".cadence" / "factory.yaml").write_text(LEARN_CONFIG, encoding="utf-8")
+    for run_id in ("1", "2", "3", "4"):
+        assert _record(project, "--cost-usd", "5", run_id=run_id) == 0
+    # 20 spent + 0 in flight + 0.50 <= 25: allowed
+    assert _learn_check(project, capsys)[0] == 0
+    # 20 + 1 build in flight * 5 + 0.50 > 25: blocked by the global cap
+    rc, report = _learn_check(project, capsys, in_flight=1)
+    assert rc == 1
+    assert report["worst_case"] == 25.5
+    assert report["learn_spent_today"] == 0.0
+
+
+def test_build_pool_report_is_unchanged(project, capsys):
+    rc, report = _check(project, capsys)
+    assert rc == 0
+    assert "pool" not in report
+    assert "learn_spent_today" not in report
+
+
+def test_load_learning_defaults(tmp_path):
+    path = tmp_path / "factory.yaml"
+    path.write_text(GOOD_CONFIG, encoding="utf-8")
+    learning = ledger.load_learning(path)
+    assert learning == ledger.LearningConfig()
+    assert learning.mode == "on"
+    assert learning.promote_after == 2
+    assert learning.repeat_window == 10
+    assert learning.area_depth == 2
+    assert learning.guarded_paths == ("tests", "test", ".github", ".cadence", "scripts", "tool")
+    assert learning.test_roots == ("tests", "test")
+    assert learning.per_run_usd == 0.25
+    assert learning.daily_usd == 1.0
+    assert learning.classify is False
+    assert learning.classify_effective is False
+
+
+def test_load_learning_default_learn_cap_stays_inside_a_small_budget(tmp_path):
+    path = tmp_path / "factory.yaml"
+    path.write_text("budget:\n  per_run_usd: 0.1\n  daily_usd: 0.2\n", encoding="utf-8")
+    learning = ledger.load_learning(path)
+    assert learning.daily_usd == 0.2
+    assert learning.per_run_usd == 0.2
+
+
+def test_load_learning_reads_yaml_on_as_mode_on(tmp_path):
+    # PyYAML reads a bare `on` as the boolean true.
+    path = tmp_path / "factory.yaml"
+    path.write_text(GOOD_CONFIG + "learning:\n  mode: on\n  classify: true\n", encoding="utf-8")
+    learning = ledger.load_learning(path)
+    assert learning.mode == "on"
+    assert learning.classify_effective is True
+
+
+def test_eval_sandbox_never_classifies(tmp_path):
+    path = tmp_path / "factory.yaml"
+    path.write_text(
+        GOOD_CONFIG + "learning:\n  mode: eval-sandbox\n  classify: true\n  model: claude-x-1\n",
+        encoding="utf-8",
+    )
+    learning = ledger.load_learning(path)
+    assert learning.classify is True
+    assert learning.classify_effective is False
+    assert learning.model == "claude-x-1"
+
+
+@pytest.mark.parametrize(
+    "block,needle",
+    [
+        ("  mode: off\n", "mode"),
+        ("  mode: auto\n", "mode"),
+        ("  promote_after: 0\n", "promote_after"),
+        ("  area_depth: 5\n", "area_depth"),
+        ("  repeat_window: -1\n", "repeat_window"),
+        ("  window_days: true\n", "window_days"),
+        ("  guarded_paths: ['..']\n", "guarded_paths"),
+        ("  guarded_paths: ['a/b']\n", "guarded_paths"),
+        ("  guarded_paths: tests\n", "guarded_paths"),
+        ("  test_roots: [spec]\n", "test_roots"),
+        ("  classify: 'yes'\n", "classify"),
+        ("  model: 'bad model'\n", "model"),
+        ("  budget:\n    per_run_usd: 2\n    daily_usd: 1\n", "per_run_usd"),
+        ("  budget:\n    daily_usd: 30\n", "daily_usd"),
+        ("  budget:\n    per_run_usd: 0\n", "per_run_usd"),
+        ("  promote_aftr: 3\n", "unknown keys"),
+        ("  - not a mapping\n", "mapping"),
+    ],
+)
+def test_invalid_learning_block_exits_2(project, capsys, block, needle):
+    (project / ".cadence" / "factory.yaml").write_text(
+        GOOD_CONFIG + "learning:\n" + block, encoding="utf-8"
+    )
+    with pytest.raises(ledger.LedgerError):
+        ledger.load_learning(project / ".cadence" / "factory.yaml")
+    assert _main(project, "check", "--now", str(NOON)) == 2
+    assert needle in capsys.readouterr().err

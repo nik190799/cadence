@@ -1,0 +1,15 @@
+# Cadence config for the learning-loop end-to-end test (a tiny TypeScript
+# app: src/domain, src/db, src/http). tests/test_learning_e2e.py copies it
+# into a temporary git repo; the learned rule is appended below the seed.
+
+commands:
+  format: ["true"]
+  lint: ["true"]
+  test: ["true"]
+
+boundaries:
+  # Seed rule: the domain never talks HTTP.
+  - where: "src/domain/**"
+    forbidden:
+      - "src/http/**"
+    reason: "The domain layer stays free of transport code."

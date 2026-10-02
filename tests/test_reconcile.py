@@ -307,9 +307,18 @@ TITLES = {1: "Add export", 2: "Fix login", 3: "Add export"}
         # The sweep itself is for no issue.
         (_run(title="cadence-factory", event="schedule"), set()),
         (_run(title="cadence-factory #sweep", event="schedule"), set()),
+        # So are the documented "#sweep" and "#learn" run names, however the
+        # run was started (a stage=reconcile or stage=learn dispatch, or a
+        # learn chain in the hourly sweep).
+        (_run(title="cadence-factory #sweep", event="workflow_dispatch"), set()),
+        (_run(title="cadence-factory #learn", event="workflow_dispatch"), set()),
+        (_run(title="cadence-factory #learn", event="schedule"), set()),
+        (_run(title=" cadence-factory #learn ", event="workflow_dispatch"), set()),
+        # Only those exact titles: anything longer is matched as before.
+        (_run(title="cadence-factory #learning", event="workflow_dispatch"), None),
+        (_run(title="cadence-factory #sweep 2", event="workflow_dispatch"), None),
         # Anything else that names no issue could be for any of them.
         (_run(title="cadence-factory", event="workflow_dispatch"), None),
-        (_run(title="cadence-factory #sweep", event="workflow_dispatch"), None),
         (_run(title="", event=""), None),
     ],
 )
@@ -471,6 +480,10 @@ def test_spec_retry_waits_for_a_run_that_may_be_for_the_issue(run):
         _run(title="cadence-factory #6", status="in_progress"),
         _run(title="Some other issue", event="issue_comment", created_min_ago=10),
         _run(title="cadence-factory", event="schedule", status="in_progress"),
+        # A learn run (dispatched or hourly) or a dispatched sweep is for no issue.
+        _run(title="cadence-factory #learn", status="in_progress", created_min_ago=10),
+        _run(title="cadence-factory #learn", event="schedule", status="in_progress"),
+        _run(title="cadence-factory #sweep", status="in_progress", created_min_ago=10),
     ],
 )
 def test_spec_retry_ignores_runs_that_are_not_for_the_issue(run):
@@ -579,6 +592,8 @@ def test_stuck_build_waits_for_a_running_run(run):
         _run(title="cadence-factory #7", status="completed", created_min_ago=5),
         _run(title="cadence-factory #8", status="in_progress"),
         _run(title="cadence-factory", event="schedule", status="in_progress"),
+        _run(title="cadence-factory #learn", status="in_progress"),
+        _run(title="cadence-factory #sweep", status="in_progress"),
     ],
 )
 def test_stuck_build_ignores_finished_or_unrelated_runs(run):

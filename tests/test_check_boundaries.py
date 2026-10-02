@@ -8,6 +8,7 @@ nothing else.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -213,3 +214,137 @@ def test_main_returns_one_when_violated(tmp_path, capsys):
     captured = capsys.readouterr()
     assert 'violations' in captured.err.lower()
     assert 'src/features/bad.py' in captured.err
+
+
+# --- Rule ids, relative skip dirs, the retro-fixture skip, paths= ---------
+
+_RULE_YAML = (
+    'commands:\n  test: ["true"]\nboundaries:\n'
+    '  - where: "src/features/**"\n'
+    '    forbidden: ["src/data/sources/**"]\n'
+    '    reason: "features go through repositories"\n'
+)
+_BAD_LINE = 'from src.data.sources.x import y\n'
+
+
+def _project(root: Path, rules: str = _RULE_YAML) -> Path:
+    cfg = root / '.cadence' / 'cadence.yaml'
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(rules, encoding='utf-8')
+    return cfg
+
+
+def _put(root: Path, rel: str, text: str = _BAD_LINE) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+
+
+def test_skip_dirs_match_relative_parts_only(tmp_path):
+    # The project itself lives under a directory named build/: before, the
+    # absolute path matched _SKIP_DIRS and nothing was ever scanned.
+    root = tmp_path / 'build' / 'proj'
+    cfg = _project(root)
+    _put(root, 'src/features/bad.py')
+    _put(root, 'src/features/node_modules/dep.py')  # still skipped
+    _put(root, 'src/features/build/gen.py')  # skipped: relative part
+    violations = checker.find_violations(root, checker._load_rules(cfg))
+    assert [v.path for v in violations] == ['src/features/bad.py']
+
+
+def test_retro_fixtures_are_skipped_from_the_project_root(tmp_path):
+    cfg = _project(tmp_path)
+    fixture = tmp_path / 'tests' / 'fixtures' / 'retro' / 'abcd1234'
+    _put(fixture, 'src/features/sample.py')
+    _project(fixture)
+    _put(tmp_path, 'src/features/real.py')
+    violations = checker.find_violations(tmp_path, checker._load_rules(cfg))
+    assert [v.path for v in violations] == ['src/features/real.py']
+    # The fixture still fires when it is the root (emit_rule --replay).
+    inside = checker.find_violations(fixture, checker._load_rules(fixture / '.cadence' / 'cadence.yaml'))
+    assert [v.path for v in inside] == ['src/features/sample.py']
+
+
+def test_paths_limits_the_scan(tmp_path):
+    cfg = _project(tmp_path)
+    for rel in ('src/features/a.py', 'src/features/b.py', 'src/features/node_modules/c.py'):
+        _put(tmp_path, rel)
+    _put(tmp_path, 'tests/fixtures/retro/abcd1234/src/features/d.py')
+    rules = checker._load_rules(cfg)
+    found = checker.find_violations(
+        tmp_path,
+        rules,
+        paths=[
+            'src/features/b.py',
+            'src/features/b.py',  # duplicates are scanned once
+            'src/features/node_modules/c.py',
+            'tests/fixtures/retro/abcd1234/src/features/d.py',
+            '../outside.py',
+            'src/features/missing.py',
+            'src/features/notes.txt',
+        ],
+    )
+    assert [v.path for v in found] == ['src/features/b.py']
+    assert checker.find_violations(tmp_path, rules, paths=[]) == []
+
+
+def test_symlinks_are_not_followed(tmp_path):
+    cfg = _project(tmp_path)
+    outside = tmp_path.parent / f'{tmp_path.name}-outside.py'
+    outside.write_text(_BAD_LINE, encoding='utf-8')
+    (tmp_path / 'src' / 'features').mkdir(parents=True)
+    try:
+        (tmp_path / 'src' / 'features' / 'link.py').symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks are not available here')
+    rules = checker._load_rules(cfg)
+    assert checker.find_violations(tmp_path, rules) == []
+    assert checker.find_violations(tmp_path, rules, paths=['src/features/link.py']) == []
+
+
+def test_rule_ids_computed_and_explicit(tmp_path):
+    cfg = _project(
+        tmp_path,
+        'commands:\n  test: ["true"]\nboundaries:\n'
+        '  - where: "src/features/**"\n'
+        '    forbidden: ["src/data/sources/**"]\n'
+        '    reason: "seed rule"\n'
+        '  - id: L-0a1b2c3d\n'
+        '    where: "src/app/**"\n'
+        '    forbidden: ["src/data/sources/**", "src/data/remote/**"]\n'
+        '    reason: "learned rule"\n',
+    )
+    seed, learned = checker._load_rules(cfg)
+    expected = 'B-' + hashlib.sha256(b'src/features/**|src/data/sources/**').hexdigest()[:8]
+    assert seed.id == expected
+    assert checker.seed_rule_id('src/features/**', ['src/data/sources/**']) == expected
+    assert learned.id == 'L-0a1b2c3d'
+    _put(tmp_path, 'src/features/x.py')
+    _put(tmp_path, 'src/app/y.py', 'from src.data.remote.z import w\n')
+    found = {v.path: v.rule_id for v in checker.find_violations(tmp_path, [seed, learned])}
+    assert found == {'src/features/x.py': expected, 'src/app/y.py': 'L-0a1b2c3d'}
+
+
+@pytest.mark.parametrize('bad_id', ['L-123', 'X-0a1b2c3d', 'L-0A1B2C3D', '12', 'L-0a1b2c3d\n'])
+def test_invalid_rule_id_exits_two(tmp_path, capsys, bad_id):
+    cfg = _project(
+        tmp_path,
+        'commands:\n  test: ["true"]\nboundaries:\n'
+        f'  - id: "{bad_id}"\n'
+        '    where: "src/**"\n'
+        '    forbidden: ["x/**"]\n'
+        '    reason: "bad id"\n',
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        checker._load_rules(cfg)
+    assert exc_info.value.code == 2
+    assert 'id must match' in capsys.readouterr().err
+    with pytest.raises(checker.ConfigError):
+        checker.load_rules(cfg)
+
+
+def test_old_positional_rule_and_violation_still_work():
+    rule = checker.Rule('src/**', ('x/**',), 'reason here')
+    assert rule.id == ''
+    violation = checker.Violation('a.py', 1, 'import x', 'x/**', 'reason')
+    assert violation.rule_id == ''

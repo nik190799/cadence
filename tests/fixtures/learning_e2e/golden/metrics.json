@@ -1,0 +1,52 @@
+{
+  "schema": "cadence.metrics/1",
+  "generated_at": "2026-10-01T13:00:00Z",
+  "repo": "octo/shop",
+  "detector_set": {
+    "kind": "current",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "metrics_code_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "order": "time",
+  "window": 10,
+  "since": "2026-09-01T00:00:00Z",
+  "completeness": {"build_runs": 2, "observed": 2, "ratio": 1.0},
+  "attempts": {"scored": 2, "ops": 0, "deduped": 0},
+  "repeat": {
+    "opportunities": 1,
+    "repeats": 1,
+    "rate": 1.0,
+    "ci95": null,
+    "status": "insufficient"
+  },
+  "escape": {
+    "escapes": 1,
+    "rate": 1.0,
+    "share": 1.0,
+    "per_10_attempts": 5.0,
+    "ci95": null
+  },
+  "by_family": {
+    "import-edge": {"opportunities": 1, "repeats": 1, "escapes": 1, "rr": 1.0, "er": 1.0}
+  },
+  "post_pr": {"prs_harvested": 1, "opportunities": 0, "repeats": 0, "rate": null},
+  "new_class_rate": 0.5,
+  "learned_check_catches": {"count": 0, "by_lesson": {}},
+  "post_promotion_exposed_no_repeat": 0,
+  "first_pass_verify": 0.5,
+  "test_tampering_rate": 0.0,
+  "merge_rate_30d": 0.0,
+  "cost": {"per_attempt_median": 0.2, "per_attempt_mean": 0.2, "per_merged_pr": null},
+  "by_class": [
+    {
+      "key": "import-edge:src/domain->src/db",
+      "rung": "check",
+      "issues": 2,
+      "occurrences": 2,
+      "escaped": 2,
+      "last_seen": "2026-10-01T12:00:00Z"
+    }
+  ],
+  "judge_shadow": null,
+  "unreadable": 0
+}

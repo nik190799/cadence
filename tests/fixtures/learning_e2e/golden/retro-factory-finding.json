@@ -1,0 +1,52 @@
+{
+  "id": "6f1c2b0e-8a7d-5c43-9b21-0d4e5f6a7b8c",
+  "ts": "2026-10-01T12:00:00Z",
+  "feature": "issue #2",
+  "what_happened": "Agent patch for #2 imports src/db from src/domain (src/domain/invoice.ts:1).",
+  "auto_catchable": true,
+  "auto_method": "boundary-rule",
+  "rule_existed": false,
+  "proposed_fix": "Promote a boundary rule: src/domain/** must not import src/db/** (tool/ladder.py).",
+  "fix_layer": 3,
+  "violation_sample": {
+    "kind": "boundary-rule",
+    "language": "ts",
+    "where": "src/domain/**",
+    "import_line": "import { query } from \"../db/client\";",
+    "forbidden_pattern": "src/db/**",
+    "reason": "Factory finding: src/domain/ must not import src/db/."
+  },
+  "factory": {
+    "schema_version": 1,
+    "class_key": "import-edge:src/domain->src/db",
+    "family": "import-edge",
+    "signal": "detector",
+    "trust": "A",
+    "phase": "pre-gate",
+    "gate_caught": false,
+    "reached_pr": true,
+    "rule_id": null,
+    "repo": "octo/shop",
+    "issue": 2,
+    "pr": 11,
+    "run_id": "1002",
+    "run_attempt": 1,
+    "base_sha": "0123456789abcdef0123456789abcdef01234567",
+    "published_sha": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "final_sha": null,
+    "patch_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "path": "src/domain/invoice.ts",
+    "line_no": 1,
+    "area": "src/domain",
+    "comment_id": null,
+    "excerpt_sha256": null,
+    "edit_basis": null,
+    "classification": {
+      "by": "deterministic",
+      "model": null,
+      "prompt_sha256": null,
+      "confidence": null
+    },
+    "judge": null
+  }
+}

@@ -104,6 +104,92 @@
         }
       }
     },
+    "factory": {
+      "type": "object",
+      "description": "Present only on findings the factory's learning loop records (tool/signals.py; see docs/LEARNING.md). Holds ids, hashes and validated keys, never comment or code text. Manual /cadence-retro findings leave it out.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "class_key",
+        "family",
+        "signal",
+        "trust",
+        "phase",
+        "gate_caught",
+        "reached_pr",
+        "repo",
+        "issue",
+        "run_id",
+        "run_attempt",
+        "classification",
+        "judge"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "class_key": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^(import-edge|guarded|missing-test|test|edit|review|gate|agent|pr):[A-Za-z0-9_./@+:>-]{1,180}$",
+          "description": "The mistake class, built by code as family:body. Identical strings are the same class."
+        },
+        "family": {
+          "type": "string",
+          "enum": ["import-edge", "guarded", "missing-test", "test", "edit", "review", "gate", "agent", "pr"]
+        },
+        "signal": {
+          "type": "string",
+          "enum": ["gate", "guarded", "detector", "human-edit", "review-comment", "reviewer-command", "pr-outcome"],
+          "description": "Where the finding came from."
+        },
+        "trust": {
+          "type": "string",
+          "enum": ["A", "B", "C"],
+          "description": "A: read statically from the patch or the GitHub API. B: parsed from output the agent can influence, checked against the base tree. C: a model's label, counted only where code verified it."
+        },
+        "phase": { "type": "string", "enum": ["pre-gate", "post-pr"] },
+        "gate_caught": { "type": "boolean", "description": "The Definition of Done gate blocked the attempt." },
+        "reached_pr": { "type": "boolean", "description": "The attempt was published as a pull request." },
+        "rule_id": {
+          "type": ["string", "null"],
+          "pattern": "^[LB]-[0-9a-f]{8}$",
+          "description": "The boundary rule that fired, if any."
+        },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$" },
+        "issue": { "type": "integer", "minimum": 1 },
+        "pr": { "type": ["integer", "null"], "minimum": 1 },
+        "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "base_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "published_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "final_sha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "patch_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "path": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.@+/-]{1,300}$" },
+        "line_no": { "type": ["integer", "null"], "minimum": 1 },
+        "area": { "type": ["string", "null"], "maxLength": 130 },
+        "comment_id": { "type": ["integer", "null"], "minimum": 1 },
+        "excerpt_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the comment body. The text itself is never stored."
+        },
+        "edit_basis": { "enum": ["ancestry", "tree-diff", null] },
+        "classification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["by"],
+          "properties": {
+            "by": { "type": "string", "enum": ["deterministic", "reviewer-command", "llm"] },
+            "model": { "type": ["string", "null"], "maxLength": 100 },
+            "prompt_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+            "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+          }
+        },
+        "judge": {
+          "type": "null",
+          "description": "Hook for a later shadow judge (Jev or an LLM). Always null in v1."
+        }
+      }
+    },
     "violation_sample": {
       "type": "object",
       "description": "Structured form of the offending code. Consumed by tool/emit_rule.py for Layer 3 boundary-class findings: lets the framework auto-generate a fixture + boundary rule and verify the rule actually fires on this exact sample before the finding is recorded as landed.",
@@ -123,17 +209,21 @@
         "where": {
           "type": "string",
           "minLength": 1,
-          "description": "Glob pattern for the file location that must not perform this import (matches cadence.yaml boundaries[].where). Example: 'src/features/**'."
+          "pattern": "^[A-Za-z0-9_.@*-][A-Za-z0-9_.@/*-]{0,199}$",
+          "description": "Glob pattern for the file location that must not perform this import (matches cadence.yaml boundaries[].where). Example: 'src/features/**'. Letters, digits and _ . @ * - /; it may not start with '/'. tool/emit_rule.py also refuses '..' segments and a tests/fixtures/ prefix."
         },
         "import_line": {
           "type": "string",
           "minLength": 1,
-          "description": "The exact offending import line as it appeared in the source. The emitter writes this verbatim into the generated fixture."
+          "maxLength": 300,
+          "pattern": "^[^\\r\\n]+$",
+          "description": "The exact offending import line as it appeared in the source: one line, at most 300 characters. The emitter writes this verbatim into the generated fixture."
         },
         "forbidden_pattern": {
           "type": "string",
           "minLength": 1,
-          "description": "Glob the import resolves to that the rule must forbid (matches cadence.yaml boundaries[].forbidden[]). Example: 'src/data/sources/**'."
+          "pattern": "^[A-Za-z0-9_.@*-][A-Za-z0-9_.@/*-]{0,199}$",
+          "description": "Glob the import resolves to that the rule must forbid (matches cadence.yaml boundaries[].forbidden[]). Example: 'src/data/sources/**'. Same character set as 'where'."
         },
         "reason": {
           "type": "string",

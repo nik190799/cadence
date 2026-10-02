@@ -1,0 +1,19 @@
+{
+  "schema": "cadence.classify/1",
+  "items": [
+    {
+      "item_id": "8888888888888888888888888888888888888888888888888888888888888888",
+      "category": "rule-violation",
+      "same_as": "import-edge:src/domain->src/db",
+      "edge": {"path": "src/domain/order.ts", "line_no": 1},
+      "confidence": 0.9
+    },
+    {
+      "item_id": "9999999999999999999999999999999999999999999999999999999999999999",
+      "category": "nit",
+      "same_as": null,
+      "edge": null,
+      "confidence": 0.4
+    }
+  ]
+}

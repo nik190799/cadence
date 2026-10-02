@@ -1,0 +1,20 @@
+{
+  "id": "3b9a2f50-1c7e-4d8a-9f60-7e2b1c3d4a5f",
+  "ts": "2026-09-30T18:05:00Z",
+  "feature": "CSV export",
+  "what_happened": "The export controller imported the HTTP client directly.",
+  "auto_catchable": true,
+  "auto_method": "boundary-rule",
+  "rule_existed": false,
+  "proposed_fix": "Forbid src/features/** from importing src/data/sources/**.",
+  "fix_layer": 3,
+  "decision": "approved",
+  "violation_sample": {
+    "kind": "boundary-rule",
+    "language": "ts",
+    "where": "src/features/**",
+    "import_line": "import { http } from '../../data/sources/http';",
+    "forbidden_pattern": "src/data/sources/**",
+    "reason": "Features talk to repositories, never to data sources."
+  }
+}

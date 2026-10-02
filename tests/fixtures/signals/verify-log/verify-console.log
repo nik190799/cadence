@@ -1,0 +1,11 @@
+> app@1.0.0 test
+[32mPASS: format (exit 0)[0m
+[32mPASS: lint (exit 0)[0m
+ RUN  v1.6.0 /home/runner/work/app/app
+
+ [31mFAIL[0m  test/order.test.ts > Order > totals
+ [31m❯[0m test/ghost.test.ts (2 tests | 1 failed)
+   × src/domain/order.spec.ts > nope
+AssertionError: expected 2 to be 3
+  FAIL: lint (exit 1)   <- indented, not verify.sh's own line
+[31mFAIL: test (exit 1)[0m

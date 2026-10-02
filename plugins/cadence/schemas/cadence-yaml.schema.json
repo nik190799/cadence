@@ -62,6 +62,11 @@
       "required": ["where", "forbidden", "reason"],
       "additionalProperties": false,
       "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[LB]-[0-9a-f]{8}$",
+          "description": "Optional rule id. Rules learned by the factory carry L-xxxxxxxx (see .cadence/lessons.yaml); a rule without one is a seed rule and gets a computed B-xxxxxxxx id."
+        },
         "where": {
           "type": "string",
           "minLength": 1,

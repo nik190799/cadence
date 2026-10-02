@@ -21,16 +21,36 @@ start of a (stripped) line, then checks the line for forbidden path
 substrings. This catches ~95 percent of real violations across the
 languages above without needing per-language ASTs. Higher-accuracy
 stack-specific adapters land in Cadence Phase 2.
+
+Rule ids:
+    Each rule has an id. An explicit ``id`` must match ``^[LB]-[0-9a-f]{8}$``
+    (``L-`` for rules the factory learned, see docs/LEARNING.md); anything
+    else is a configuration error (exit 2). A rule without one gets the
+    seed id ``B-`` + the first 8 hex digits of
+    ``sha256(where + "|" + "|".join(forbidden))``. Violations carry the id.
+
+What is scanned:
+    Files with a source extension under ``--root``, except directories
+    named in ``_SKIP_DIRS`` (matched against the path relative to the
+    root, so a root inside a ``build/`` directory still works), the
+    generated retro fixtures under ``tests/fixtures/retro/`` (each holds a
+    deliberate violation; ``tool/emit_rule.py --replay`` checks them), and
+    symbolic links. ``find_violations(root, rules, paths=[...])`` scans only
+    the given repo-relative paths, with the same rules.
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
+import os
+import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 try:
     import yaml
@@ -103,11 +123,25 @@ _SKIP_DIRS: frozenset[str] = frozenset(
 )
 
 
+# Learned rules (L-) and seed rules (B-). Always used with fullmatch.
+RULE_ID_RE = r"^[LB]-[0-9a-f]{8}$"
+_RULE_ID = re.compile(RULE_ID_RE)
+
+# Generated retro fixtures each hold a deliberate violation; never scan them
+# as part of the project.
+RETRO_FIXTURE_PREFIX = "tests/fixtures/retro/"
+
+
+class ConfigError(Exception):
+    """The cadence config cannot be used. ``_load_rules`` exits 2 on it."""
+
+
 @dataclass(frozen=True)
 class Rule:
     where: str
     forbidden: tuple[str, ...]
     reason: str
+    id: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +151,7 @@ class Violation:
     line: str
     forbidden: str
     reason: str
+    rule_id: str = ""
 
     def format(self) -> str:
         snippet = self.line if len(self.line) <= 120 else self.line[:117] + '...'
@@ -214,70 +249,150 @@ def _line_contains_token(line: str, token: str) -> bool:
         start = idx + 1
 
 
-def _load_rules(config_path: Path) -> list[Rule]:
-    if not config_path.exists():
-        print(
-            f'ERROR: cadence config not found: {config_path}',
-            file=sys.stderr,
-        )
-        sys.exit(2)
+def seed_rule_id(where: str, forbidden: Sequence[str]) -> str:
+    """The id of a rule that has no explicit ``id``."""
+    digest = hashlib.sha256((where + "|" + "|".join(forbidden)).encode("utf-8"))
+    return "B-" + digest.hexdigest()[:8]
 
-    with config_path.open('r', encoding='utf-8') as fh:
-        try:
-            cfg = yaml.safe_load(fh)
-        except yaml.YAMLError as exc:
-            print(
-                f'ERROR: malformed YAML in {config_path}: {exc}',
-                file=sys.stderr,
-            )
-            sys.exit(2)
 
+def rules_from_config(cfg: Any) -> list[Rule]:
+    """The boundary rules of a parsed cadence.yaml. Raises ConfigError."""
     if not isinstance(cfg, dict):
-        print('ERROR: cadence config must be a YAML mapping', file=sys.stderr)
-        sys.exit(2)
+        raise ConfigError('cadence config must be a YAML mapping')
 
     raw_rules = cfg.get('boundaries', []) or []
     if not isinstance(raw_rules, list):
-        print("ERROR: 'boundaries' must be a list", file=sys.stderr)
-        sys.exit(2)
+        raise ConfigError("'boundaries' must be a list")
 
     rules: list[Rule] = []
     for idx, raw in enumerate(raw_rules):
         if not isinstance(raw, dict):
-            print(
-                f'ERROR: boundaries[{idx}] must be a mapping',
-                file=sys.stderr,
-            )
-            sys.exit(2)
+            raise ConfigError(f'boundaries[{idx}] must be a mapping')
         try:
-            rules.append(
-                Rule(
-                    where=str(raw['where']),
-                    forbidden=tuple(str(f) for f in raw['forbidden']),
-                    reason=str(raw['reason']),
-                )
-            )
+            where = str(raw['where'])
+            forbidden = tuple(str(f) for f in raw['forbidden'])
+            reason = str(raw['reason'])
         except KeyError as exc:
-            print(
-                f'ERROR: boundaries[{idx}] missing required key: {exc}',
-                file=sys.stderr,
+            raise ConfigError(
+                f'boundaries[{idx}] missing required key: {exc}'
+            ) from exc
+        except TypeError as exc:
+            raise ConfigError(
+                f'boundaries[{idx}].forbidden must be a list'
+            ) from exc
+        rule_id = raw.get('id')
+        if rule_id is None:
+            rule_id = seed_rule_id(where, forbidden)
+        elif not isinstance(rule_id, str) or not _RULE_ID.fullmatch(rule_id):
+            raise ConfigError(
+                f'boundaries[{idx}].id must match {RULE_ID_RE} (got {rule_id!r})'
             )
-            sys.exit(2)
+        rules.append(Rule(where=where, forbidden=forbidden, reason=reason, id=rule_id))
     return rules
 
 
+def load_rules(config_path: Path) -> list[Rule]:
+    """Read the boundary rules from ``config_path``. Raises ConfigError."""
+    if not config_path.exists():
+        raise ConfigError(f'cadence config not found: {config_path}')
+    try:
+        with config_path.open('r', encoding='utf-8') as fh:
+            cfg = yaml.safe_load(fh)
+    except (yaml.YAMLError, ValueError, RecursionError) as exc:
+        raise ConfigError(f'malformed YAML in {config_path}: {exc}') from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f'could not read {config_path}: {exc}') from exc
+    return rules_from_config(cfg)
+
+
+def _load_rules(config_path: Path) -> list[Rule]:
+    try:
+        return load_rules(config_path)
+    except ConfigError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        sys.exit(2)
+
+
+def _skipped_rel(rel: str) -> bool:
+    """True if the repo-relative posix path ``rel`` is never scanned."""
+    if rel.startswith(RETRO_FIXTURE_PREFIX):
+        return True
+    return bool(set(rel.split('/')) & _SKIP_DIRS)
+
+
 def _iter_source_files(root: Path) -> Iterable[Path]:
-    for path in root.rglob('*'):
-        if not path.is_file():
-            continue
-        if path.suffix not in _SOURCE_EXTS:
-            continue
-        if set(path.parts) & _SKIP_DIRS:
-            continue
-        yield path
+    """Source files under ``root``, in a stable order.
+
+    Skip dirs are matched on the path relative to ``root``, so a root that
+    itself sits under a directory named ``build`` is still scanned.
+    Symbolic links are skipped, and never followed into.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        rel_dir = here.relative_to(root).as_posix()
+        rel_dir = '' if rel_dir == '.' else rel_dir + '/'
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in _SKIP_DIRS
+            and not (rel_dir + d + '/').startswith(RETRO_FIXTURE_PREFIX)
+            and not (here / d).is_symlink()
+        )
+        for name in sorted(filenames):
+            path = here / name
+            if path.suffix not in _SOURCE_EXTS:
+                continue
+            if _skipped_rel(rel_dir + name):
+                continue
+            if path.is_symlink() or not path.is_file():
+                continue
+            yield path
 
 
-def find_violations(root: Path, rules: Sequence[Rule]) -> list[Violation]:
+def _iter_given_paths(root: Path, paths: Iterable[str]) -> Iterable[Path]:
+    """The scannable files among the repo-relative posix ``paths``.
+
+    The same extension, skip and symlink rules as a full scan apply. A path
+    that leaves the root, or runs through a symlinked directory, is
+    ignored.
+    """
+    seen: set[str] = set()
+    for rel in paths:
+        if not isinstance(rel, str) or not rel or rel in seen:
+            continue
+        seen.add(rel)
+        parts = rel.split('/')
+        if rel.startswith('/') or '\\' in rel or any(
+            part in ('', '.', '..') for part in parts
+        ):
+            continue
+        if Path(rel).suffix not in _SOURCE_EXTS or _skipped_rel(rel):
+            continue
+        current = root
+        mode = 0
+        for part in parts:
+            current = current / part
+            try:
+                mode = os.lstat(current).st_mode
+            except OSError:
+                mode = 0
+                break
+            if stat.S_ISLNK(mode):
+                mode = 0
+                break
+        if stat.S_ISREG(mode):
+            yield current
+
+
+def find_violations(
+    root: Path,
+    rules: Sequence[Rule],
+    paths: Iterable[str] | None = None,
+) -> list[Violation]:
+    """Violations of ``rules`` under ``root``.
+
+    With ``paths``, only those repo-relative posix paths are scanned.
+    """
     violations: list[Violation] = []
     forbidden_entries: list[tuple[Rule, str, list[str]]] = [
         (rule, forbidden, _forbidden_tokens(forbidden))
@@ -285,7 +400,10 @@ def find_violations(root: Path, rules: Sequence[Rule]) -> list[Violation]:
         for forbidden in rule.forbidden
     ]
 
-    for path in _iter_source_files(root):
+    files = (
+        _iter_source_files(root) if paths is None else _iter_given_paths(root, paths)
+    )
+    for path in files:
         rel = path.relative_to(root).as_posix()
 
         applicable: list[tuple[Rule, str, list[str]]] = [
@@ -316,6 +434,7 @@ def find_violations(root: Path, rules: Sequence[Rule]) -> list[Violation]:
                                 line=line.strip(),
                                 forbidden=forbidden,
                                 reason=rule.reason,
+                                rule_id=rule.id,
                             )
                         )
                         break  # one violation per forbidden pattern per line

@@ -1,0 +1,72 @@
+{
+  "schema": "cadence.observation/1",
+  "repo": "octo/shop",
+  "issue": 2,
+  "run_id": "1002",
+  "run_attempt": 1,
+  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+  "completed_at": "2026-10-01T12:00:00Z",
+  "patch_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "patch_bytes": 512,
+  "apply_status": "ok",
+  "agent_result": "success",
+  "agent_subtype": "success",
+  "verify_result": "failure",
+  "gate_step": "test",
+  "published": false,
+  "pr": null,
+  "published_sha": null,
+  "detector_version": "3333333333333333333333333333333333333333333333333333333333333333",
+  "ruleset_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "config_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+  "area_depth": 2,
+  "evidence": {
+    "files": [
+      {"path": "src/domain/invoice.ts", "op": "A", "area": "src/domain", "test": false, "source": true},
+      {"path": "tests/unit/order.test.ts", "op": "M", "area": "tests/unit", "test": true, "source": false}
+    ],
+    "import_edges": [
+      {
+        "path": "src/domain/invoice.ts",
+        "line_no": 1,
+        "from_area": "src/domain",
+        "to": "src/db",
+        "kind": "relative",
+        "key": "import-edge:src/domain->src/db",
+        "line": "import { query } from \"../db/client\";",
+        "line_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      {
+        "path": "src/domain/invoice.ts",
+        "line_no": 2,
+        "from_area": "src/domain",
+        "to": "pkg:lodash",
+        "kind": "package",
+        "key": "import-edge:src/domain->pkg:lodash",
+        "line": null,
+        "line_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+      }
+    ],
+    "guarded": [
+      {"root": "tests", "op": "modify", "path": "tests/unit/order.test.ts"}
+    ],
+    "rule_hits": [
+      {
+        "rule_id": "B-0a1b2c3d",
+        "path": "src/domain/invoice.ts",
+        "line_no": 3,
+        "forbidden": "src/http/**",
+        "key": "import-edge:src/domain->src/http"
+      }
+    ],
+    "failing_tests": [
+      {"path": "tests/unit/order.test.ts"}
+    ]
+  },
+  "classes": [
+    "guarded:tests:modify",
+    "test:tests/unit/order.test.ts",
+    "gate:test"
+  ],
+  "truncated": false
+}

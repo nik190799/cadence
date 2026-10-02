@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+collected 3 items
+
+tests/test_calc.py F.                                                     [ 66%]
+tests/test_ghost.py F                                                     [100%]
+=========================== short test summary info ============================
+FAILED tests/test_calc.py::test_add - assert 1 == 2
+FAILED tests/test_ghost.py::test_x - assert False
+FAILED ../outside/test_evil.py::test_y - nope
