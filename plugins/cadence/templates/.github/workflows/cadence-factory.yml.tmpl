@@ -34,9 +34,10 @@
 # (spec-ready). A user with write access replies `/approve` -> gate (budget +
 # claim, building) -> agent builds -> verify runs the Definition of Done on a
 # fresh checkout -> observe scans the attempt -> publish opens a draft PR
-# (pr-open), or labels dod-failed / needs-human. ledger books the cost and
-# the observation, release frees the claim. Hourly, reconcile re-derives
-# stuck work and says whether a learn run is due.
+# (pr-open) whose commit carries a `cadence/verify` check, or labels
+# dod-failed / needs-human. ledger books the cost and the observation,
+# release frees the claim. Hourly, reconcile re-derives stuck work and says
+# whether a learn run is due.
 #
 # Learning loop (docs/LEARNING.md). In the hourly sweep when something is due,
 # or on a dispatch with stage=learn: harvest reads closed agent PRs (human
@@ -50,12 +51,13 @@
 # Tokens. The jobs that run the model on untrusted text (intake, agent,
 # classify) hold read-only tokens and no App key; what they produce leaves as
 # an artifact or a job output, and a later job checks it and posts or pushes
-# it. GITHUB_TOKEN writes labels and comments: events it causes start no
-# workflow, so the factory cannot trigger itself. The App token is minted only
-# in jobs that push (gate, publish, ledger, release, reconcile, learn-record,
-# retro-publish) and is revoked when the job ends. Untrusted text (issue
-# title, body, comments, model output) never reaches a `run:` script through
-# ${{ }}: it goes through files or environment variables.
+# it. GITHUB_TOKEN writes labels, comments and the cadence/verify check:
+# events it causes start no workflow, so the factory cannot trigger itself.
+# The App token is minted only in jobs that push (gate, publish, ledger,
+# release, reconcile, learn-record, retro-publish) and is revoked when the job
+# ends. Untrusted text (issue title, body, comments, model output) never
+# reaches a `run:` script through ${{ }}: it goes through files or
+# environment variables.
 
 name: cadence-factory
 # tool/reconcile.py matches runs to issues by this exact title shape;
@@ -694,6 +696,7 @@ jobs:
       contents: read
     outputs:
       guarded: ${{ steps.apply.outputs.guarded }}
+      tree: ${{ steps.apply.outputs.tree }}
       # Tier B: the verify step runs agent code, which can write its own
       # failed_step. publish maps it to a fixed word before posting it, and
       # observe recomputes the gate step itself.
@@ -821,6 +824,10 @@ jobs:
           if [ -n "$guarded" ]; then
             echo "::warning::The patch touches guarded paths ($guarded); existing files there were restored from the base and new files outside the test roots ($TEST_ROOTS) were left out."
           fi
+          # The exact tree the gate tests, recorded before any agent code runs.
+          # publish posts a passing cadence/verify check only on a commit with
+          # this tree.
+          echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
           git status --short
 
       # ---------------------------------------------------------------
@@ -1021,6 +1028,7 @@ jobs:
     permissions:
       contents: read # spec stage: check out tool/ to clean the spec before posting
       issues: write # labels and comments as github-actions[bot]; they start no workflow
+      checks: write # the cadence/verify check on the pushed commit
     outputs:
       # Read by ledger (prs/<pr>-<run>.json on cadence/state), so harvest can
       # later diff the human's edits against exactly what the agent pushed.
@@ -1186,6 +1194,66 @@ jobs:
           # exist yet". A branch that moved in between is never overwritten.
           old=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
           git push --force-with-lease="refs/heads/$BRANCH:$old" origin "HEAD:refs/heads/$BRANCH"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      # The gate's result as a check on the pushed commit, so the PR shows it
+      # beside CI. Green only when the pushed tree is exactly the tree verify
+      # tested. When verify ran with guarded paths restored, the commit holds
+      # changes the gate never ran, and the check asks for a human instead.
+      # A commit pushed to the branch later (a human edit) gets no
+      # cadence/verify check; the repo's own CI covers it. GitHub replaces
+      # details_url on checks made with GITHUB_TOKEN (seen live, 2026-10-02),
+      # so the summary carries the run link too.
+      - name: Post the cadence/verify check
+        if: needs.verify.result == 'success'
+        env:
+          HEAD_SHA: ${{ steps.push.outputs.published_sha }}
+          PUSHED_TREE: ${{ steps.push.outputs.tree }}
+          VERIFIED_TREE: ${{ needs.verify.outputs.tree }}
+          GUARDED: ${{ needs.verify.outputs.guarded }}
+        run: |
+          hex='^[0-9a-f]{40}([0-9a-f]{24})?$'
+          if ! [[ "$HEAD_SHA" =~ $hex && "$PUSHED_TREE" =~ $hex ]]; then
+            echo "::error::No pushed commit to attach the cadence/verify check to."
+            exit 1
+          fi
+          if [[ "$VERIFIED_TREE" =~ $hex && "$VERIFIED_TREE" == "$PUSHED_TREE" ]]; then
+            conclusion=success
+            title="Definition of Done passed"
+          else
+            conclusion=action_required
+            title="Gate passed on a different tree: review by hand"
+          fi
+          # Fixed strings only, as in the PR body: nothing from the log
+          # reaches the check.
+          log="$RUNNER_TEMP/verify-log/last_verify.log"
+          summary="$RUNNER_TEMP/check-summary.md"
+          {
+            if [ "$conclusion" = success ]; then
+              printf '`scripts/verify.sh` passed on a fresh checkout with no secrets, on exactly the tree of this commit.\n\n'
+            elif [ -n "$GUARDED" ]; then
+              printf 'The patch changes %s. The gate ran with the existing files there restored from the base branch and new files outside `tests/` left out, so this commit holds changes the gate never ran. Review them by hand.\n\n' "$GUARDED"
+            else
+              printf 'The tree of this commit is not the tree the gate tested. Review it by hand.\n\n'
+            fi
+            found=0
+            for s in format lint boundaries test; do
+              if [ -f "$log" ] && grep -qxF "  ✓ $s" "$log"; then
+                printf -- '- ✓ %s\n' "$s"
+                found=1
+              fi
+            done
+            [ "$found" -eq 1 ] || printf -- '- ✓ scripts/verify.sh\n'
+            printf '\nTested tree `%s`, commit tree `%s`.\n' "${VERIFIED_TREE:-unknown}" "$PUSHED_TREE"
+            printf 'Run %s: verify log `verify-log-%s`.\n' "$RUN_URL" "$GITHUB_RUN_ID"
+          } > "$summary"
+          jq -n --arg sha "$HEAD_SHA" --arg conclusion "$conclusion" --arg title "$title" \
+            --arg url "$RUN_URL" --arg run "$GITHUB_RUN_ID" --rawfile summary "$summary" \
+            '{name: "cadence/verify", head_sha: $sha, status: "completed",
+              conclusion: $conclusion, details_url: $url, external_id: $run,
+              output: {title: $title, summary: $summary}}' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input - > /dev/null
+          echo "cadence/verify: $conclusion on $HEAD_SHA"
 
       - name: Open or update the draft PR
         id: pr
