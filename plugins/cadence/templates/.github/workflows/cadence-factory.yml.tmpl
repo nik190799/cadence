@@ -971,7 +971,9 @@ jobs:
       # tested. When verify ran with guarded paths restored, the commit holds
       # changes the gate never ran, and the check asks for a human instead.
       # A commit pushed to the branch later (a human edit) gets no
-      # cadence/verify check; the repo's own CI covers it.
+      # cadence/verify check; the repo's own CI covers it. GitHub replaces
+      # details_url on checks made with GITHUB_TOKEN (seen live, 2026-10-02),
+      # so the summary carries the run link too.
       - name: Post the cadence/verify check
         if: needs.verify.result == 'success'
         env:
