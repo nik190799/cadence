@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-09-30 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode started on the `factory` branch.
+**Updated:** 2026-10-02 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built, not yet run live.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -27,8 +27,9 @@ every failure climbs note → pattern → check. Design: [docs/FACTORY.md](docs/
 Full reasoning, 24 angles and sources: the
 [Cadence Factory decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
 
-The `factory` branch holds a scaffold only: two skill stubs, a workflow
-skeleton, three tool stubs and the eval plan. Nothing is functional yet.
+The `factory` branch runs end to end in the sandbox (phase 1a, below) and
+now carries the learning loop (phase 1b, [docs/LEARNING.md](docs/LEARNING.md)),
+which has passed tests and an offline simulation but has not run on GitHub.
 
 ## Do not
 
@@ -67,8 +68,20 @@ skeleton, three tool stubs and the eval plan. Nothing is functional yet.
 
 ## Next (phase 1b, from 2026-10-02)
 
-1. **Learning ladder:** retro findings from runs -> notes/patterns -> a check that
-   must fire on its sample, delivered as a PR to `.cadence/`.
+1. ~~**Learning ladder.**~~ **Built 2026-10-02** (`b988643`): observe, harvest,
+   optional classify, ladder (note -> pattern -> check -> retire), one retro PR,
+   metrics. 1146 tests; offline simulation 46/46; adversarial review found no
+   blocker. **Next: the live demo** in the sandbox (plant a `src/db` layer and
+   three issues whose natural fix imports it from `src/http`; the third should be
+   caught by a learned rule). Before it: copy this branch's workflow and tools to
+   the sandbox, add `__pycache__/` to its `.gitignore`, and give `retro-plan` the
+   sandbox's setup-node and `npm ci`. Review follow-ups:
+   - a retro result that fails `verify.sh` fails retro-plan with no PR, and every
+     later learn run fails the same way (should fall back to a pattern);
+   - a directory-index import (`from "../db"`) gets the right class but no check,
+     because `check_boundaries.py` matches tokens;
+   - `queue: max` on the learn jobs, `gh pr merge --match-head-commit` with the
+     App token and real job-output sizes are unproven until it runs live.
 2. **One retry on a failed gate,** feeding the verify log back to the agent
    (TODO in the publish job).
 3. **Hardening before any real repo:** pin every action to a commit SHA; research

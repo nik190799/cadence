@@ -5,7 +5,8 @@ title: Learning loop
 
 # Learning loop
 
-> **Status: specified 2026-10-01 for phase 1b, not built yet.** Part of
+> **Status: built 2026-10-02 on the `factory` branch (phase 1b); not yet run
+> on GitHub.** Open items are listed under [Open questions](#open-questions). Part of
 > [factory mode](FACTORY.md). Background: "How it learns" and "Measurement"
 > in the [decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
 
