@@ -274,6 +274,8 @@ def observe_args(
     log_dir: Path | None = None,
     result: Path | None = None,
     patch: Path | None = None,
+    spec: Path | None = None,
+    spec_sha256: str | None = None,
 ) -> list[str]:
     args = [
         "observe",
@@ -296,6 +298,10 @@ def observe_args(
         args += ["--verify-log-dir", str(log_dir)]
     if result is not None:
         args += ["--result-json", str(result)]
+    if spec is not None:
+        args += ["--spec", str(spec)]
+    if spec_sha256 is not None:
+        args += ["--spec-sha256", spec_sha256]
     return args
 
 
@@ -665,6 +671,185 @@ def test_findings_cap_25_in_priority_order(tmp_path, attempt):
     assert families == ["import-edge"] + ["guarded"] * 6 + ["test"] * 18
     assert "gate:test" in observation["classes"]  # still in the observation
     assert_valid(observation, findings)
+
+
+# --- 4b. observe: the lessons the approved spec cites (informational) -------------
+
+CHECK_KEY = "import-edge:src/domain->src/db"
+PATTERN_KEY = "missing-test:src/api"
+RETIRED_KEY = "guarded:tests:modify"
+CHECK_ID = signals.lesson_id(CHECK_KEY)
+PATTERN_ID = signals.lesson_id(PATTERN_KEY)
+RETIRED_ID = signals.lesson_id(RETIRED_KEY)
+MADE_UP_ID = "L-deadbeef"  # in no lessons.yaml
+WRONG_ID = "L-00000000"  # listed below, but not lesson_id() of its class key
+assert len({CHECK_ID, PATTERN_ID, RETIRED_ID, MADE_UP_ID, WRONG_ID}) == 5
+
+LESSONS_YAML = f"""\
+schema: cadence.lessons/1
+lessons:
+- id: {CHECK_ID}
+  class_key: {CHECK_KEY}
+  rung: check
+  since: '2026-10-02'
+  text: '`src/domain/` must not import `src/db/`. Enforced by check {CHECK_ID} (seen in #3, #5).'
+  check: {{kind: boundary-rule, rule_id: {CHECK_ID}, fixture: tests/fixtures/retro/{CHECK_ID[2:]}/}}
+- id: {PATTERN_ID}
+  class_key: {PATTERN_KEY}
+  rung: pattern
+  since: '2026-10-01'
+  text: 'Changes under `src/api/` must add or update a test (missed in #1, #2).'
+- id: {RETIRED_ID}
+  class_key: {RETIRED_KEY}
+  rung: retired
+  since: '2026-10-01'
+  retired: {{'on': '2026-10-01', reason: stale}}
+- id: {WRONG_ID}
+  class_key: test:test/order.test.ts
+  rung: pattern
+  since: '2026-10-01'
+  text: 'Changes have broken `test/order.test.ts` (#1, #2); run it before finishing.'
+"""
+
+SPEC_MD = f"""\
+<!-- cadence-intake:spec -->
+## Cadence spec for #8
+
+FEATURE: Load orders through an injected query function.
+
+### Patterns and checks that apply
+- `.cadence/lessons.yaml` {PATTERN_ID} (pattern): changes under `src/api/` must add a test.
+- `.cadence/lessons.yaml` {CHECK_ID} (check): `src/domain/` must not import `src/db/`.
+  The issue's design would fail the gate, so the domain takes a query function.
+- Also seen: {RETIRED_ID} (retired), {MADE_UP_ID} and {WRONG_ID}; again {CHECK_ID}.
+"""
+
+LESSON_CHANGE = {
+    "src/domain/order.ts": "export const order = (query: (sql: string) => unknown) => query('x');\n",
+    "src/domain/order.test.ts": "test('order', () => {});\n",
+}
+
+
+@pytest.fixture(scope="module")
+def lessons_base(tmp_path_factory) -> tuple[Path, str]:
+    """A base commit whose .cadence/lessons.yaml holds an active check, an
+    active pattern, a retired lesson and an entry with the wrong id."""
+    files = {**BASE_FILES, ".cadence/lessons.yaml": LESSONS_YAML}
+    return make_base(tmp_path_factory.mktemp("lessons") / "base", files)
+
+
+def _spec(tmp_path: Path, text: str = SPEC_MD) -> tuple[Path, str]:
+    path = tmp_path / "input" / "spec.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    return path, sha256(path.read_bytes())
+
+
+def test_observe_records_only_the_active_base_lessons_the_spec_cites(tmp_path, lessons_base):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    spec, spec_sha = _spec(tmp_path)
+    observation, findings, _ = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    # The retired lesson, the made-up id and the entry whose id is not
+    # lesson_id(class_key) are dropped; sorted, each once.
+    assert observation["lessons_cited"] == sorted([CHECK_ID, PATTERN_ID])
+    assert_valid(observation, findings)
+
+
+def test_observe_lessons_cited_is_null_without_a_spec(tmp_path, lessons_base):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    observation, findings, _ = run_observe(att, verify="success")
+    assert observation["lessons_cited"] is None  # unknown, not "none cited"
+    assert_valid(observation, findings)
+
+
+def test_observe_lessons_cited_leaves_every_other_field_alone(tmp_path, lessons_base):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    spec, spec_sha = _spec(tmp_path)
+    with_spec, findings_with, _ = run_observe(
+        att, tmp_path / "with", verify="success", spec=spec, spec_sha256=spec_sha
+    )
+    without, findings_without, _ = run_observe(att, tmp_path / "without", verify="success")
+    assert with_spec.pop("lessons_cited") == sorted([CHECK_ID, PATTERN_ID])
+    assert without.pop("lessons_cited") is None
+    assert with_spec == without
+    assert findings_with == findings_without
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## Cadence spec\n\nNo learned lesson applies.\n",
+        # Glued to a letter, digit, '_' or '-', or in the wrong case: not a token.
+        f"X{CHECK_ID} {CHECK_ID}0 {CHECK_ID}_ {CHECK_ID}-x {PATTERN_ID.upper()} -{PATTERN_ID}\n",
+    ],
+)
+def test_observe_spec_that_cites_no_active_lesson_records_an_empty_list(tmp_path, lessons_base, text):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    spec, spec_sha = _spec(tmp_path, text)
+    observation, _, _ = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    assert observation["lessons_cited"] == []
+
+
+def test_observe_spec_that_is_not_the_one_the_gate_recorded_is_unknown(tmp_path, lessons_base, capsys):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    spec, _ = _spec(tmp_path)
+    observation, _, _ = run_observe(att, verify="success", spec=spec, spec_sha256="0" * 64)
+    assert observation["lessons_cited"] is None
+    assert "does not match --spec-sha256" in capsys.readouterr().err
+
+
+def test_observe_missing_spec_file_is_unknown(tmp_path, lessons_base):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    observation, _, _ = run_observe(att, verify="success", spec=tmp_path / "absent.md")
+    assert observation["lessons_cited"] is None
+
+
+def test_observe_base_without_lessons_cites_nothing(tmp_path, attempt):
+    att = attempt(LESSON_CHANGE)  # BASE_FILES has no .cadence/lessons.yaml
+    spec, spec_sha = _spec(tmp_path)
+    observation, _, _ = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    assert observation["lessons_cited"] == []
+
+
+@pytest.mark.parametrize("lessons", ["lessons: [unclosed\n", "- just\n- a list\n", "schema: x\nlessons: 3\n"])
+def test_observe_unreadable_base_lessons_are_unknown(tmp_path, attempt, lessons):
+    att = attempt(LESSON_CHANGE, {**BASE_FILES, ".cadence/lessons.yaml": lessons})
+    spec, spec_sha = _spec(tmp_path)
+    observation, _, _ = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    assert observation["lessons_cited"] is None
+
+
+def test_observe_reads_lessons_from_the_base_not_the_patch(tmp_path, lessons_base):
+    """A patch that adds a lesson to .cadence/lessons.yaml cannot make the
+    spec's citation of it count: only the base commit's lessons do."""
+    invented = signals.lesson_id("import-edge:src/http->src/db")
+    change = {
+        **LESSON_CHANGE,
+        ".cadence/lessons.yaml": LESSONS_YAML
+        + f"- id: {invented}\n  class_key: import-edge:src/http->src/db\n  rung: check\n",
+    }
+    att = make_attempt(tmp_path, change, shared=lessons_base)
+    spec, spec_sha = _spec(tmp_path, SPEC_MD + f"- {invented}\n")
+    observation, _, _ = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    assert observation["lessons_cited"] == sorted([CHECK_ID, PATTERN_ID])
+
+
+def test_observe_spec_sha256_needs_a_spec(tmp_path, lessons_base, capsys):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    rc = signals.main(observe_args(att, tmp_path / "out", spec_sha256="0" * 64))
+    assert rc == 2
+    assert "--spec-sha256 needs --spec" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_lessons_cited_survives_finalize(tmp_path, lessons_base, capsys):
+    att = make_attempt(tmp_path, LESSON_CHANGE, shared=lessons_base)
+    spec, spec_sha = _spec(tmp_path)
+    _, _, out = run_observe(att, verify="success", spec=spec, spec_sha256=spec_sha)
+    staged = tmp_path / "staged"
+    assert signals.main(_finalize_args(out, staged)) == 0
+    booked = json.loads((staged / "observations" / "1001-1.json").read_text(encoding="utf-8"))
+    assert booked["lessons_cited"] == sorted([CHECK_ID, PATTERN_ID])
 
 
 # --- 5. bundle, finalize ----------------------------------------------------------

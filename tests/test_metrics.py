@@ -369,6 +369,103 @@ def test_learned_check_catches_from_decisions_and_plans(tmp_path):
     assert rep["learned_check_catches"] == {"count": 1, "by_lesson": {L: 1}}
 
 
+# --- lessons_cited (informational) ---------------------------------------------------------------
+
+G_ID = ladder.lesson_id(G)
+TESTS_MODIFIED = [{"root": "tests", "op": "modify", "path": "tests/a.ts"}]
+
+
+def test_lessons_cited_absent_present_and_unknown(tmp_path):
+    """a1 predates the field and a4 is null: unknown, never absent. a2 cites
+    L and has no K: absent. a3 cites L and adds K anyway: present. a5 cites
+    nothing. a6 cites L (absent) and G (present: it modifies tests/). a3's
+    re-run with the same patch is one attempt, counted once."""
+    state = b.StateDir(tmp_path / "state")
+    with_k(state, "101", 1, 0)
+    without_k(state, "102", 2, 1, lessons_cited=[L])
+    a3 = with_k(state, "103", 3, 2, lessons_cited=[L])
+    dup = with_k(state, "103", 3, 2.5, attempt=2, lessons_cited=None)
+    dup["patch_sha256"] = a3["patch_sha256"]
+    state.observe(dup)
+    without_k(state, "104", 4, 3, lessons_cited=None)
+    without_k(state, "105", 5, 4, lessons_cited=[])
+    without_k(state, "106", 6, 5, lessons_cited=sorted([L, G_ID]), guarded=TESTS_MODIFIED)
+    seed(state)
+    rep = report(state)
+    validate(rep)
+    assert rep["attempts"] == {"scored": 6, "ops": 0, "deduped": 1}
+    assert rep["lessons_cited"] == {
+        "attempts_with_citation": 3,
+        "attempts_unknown": 2,
+        "cited_and_absent": {"count": 2, "by_lesson": {L: 2}},
+        "cited_and_present": {"count": 2, "by_lesson": {L: 1, G_ID: 1}},
+    }
+    # Informational only: a cited-and-absent attempt is no catch.
+    assert rep["learned_check_catches"] == {"count": 0, "by_lesson": {}}
+
+
+def test_lessons_cited_follows_the_detector_set(tmp_path):
+    """"Present" means the class is in C(a) as metrics computes it: an
+    unseeded edge is not a class, so citing its lesson counts as absent."""
+    state = b.StateDir(tmp_path / "state")
+    with_k(state, "101", 1, 0, lessons_cited=[L])
+    rep = report(state)
+    assert rep["lessons_cited"]["cited_and_absent"] == {"count": 1, "by_lesson": {L: 1}}
+    seed(state)
+    rep = report(state)
+    assert rep["lessons_cited"]["cited_and_present"] == {"count": 1, "by_lesson": {L: 1}}
+
+
+def test_lessons_cited_with_no_observations_is_all_zero(tmp_path):
+    rep = report(b.StateDir(tmp_path / "state"))
+    validate(rep)
+    assert rep["lessons_cited"] == {
+        "attempts_with_citation": 0,
+        "attempts_unknown": 0,
+        "cited_and_absent": {"count": 0, "by_lesson": {}},
+        "cited_and_present": {"count": 0, "by_lesson": {}},
+    }
+
+
+def _numbers_state(root: Path, cite) -> b.StateDir:
+    """The catch scenario plus escapes, guarded repeats, costs and a PR, with
+    ``cite(run)`` as each observation's lessons_cited ("absent" leaves it out)."""
+    state = b.StateDir(root)
+    hit = [b.rule_hit(L, "src/domain/order.ts", 1, K, "src/db/**")]
+    with_k(state, "101", 1, 0, lessons_cited=cite("101"), published=True, pr=5)
+    with_k(state, "102", 2, 1, lessons_cited=cite("102"), guarded=TESTS_MODIFIED)
+    with_k(state, "103", 8, 3, hits=hit, lessons_cited=cite("103"))
+    with_k(state, "104", 7, 6, hits=hit, verify="failure", lessons_cited=cite("104"), published=True, pr=6)
+    with_k(state, "105", 1, 7, hits=hit, patch_sha256=b.sha256("again"), lessons_cited=cite("105"))
+    without_k(state, "106", 9, 8, lessons_cited=cite("106"), guarded=TESTS_MODIFIED)
+    without_k(state, "107", 10, 9, lessons_cited=cite("107"), published=True, pr=7)
+    for i, run in enumerate(("101", "102", "103", "104", "105", "106", "107")):
+        state.run(run, booked=1.0 + i, day=i)
+    state.pr(5, 1, "101", day=0)
+    state.harvest(5, 1, merged=True, day=2)
+    seed(state)
+    return state
+
+
+def test_lessons_cited_never_changes_an_existing_number(tmp_path):
+    """The same attempts with and without lessons_cited give the same report,
+    the new block aside: it feeds no rate, catch or count."""
+    values = {"101": [L], "102": None, "103": [], "104": [L, G_ID], "105": [G_ID], "106": [L], "107": None}
+    without = _numbers_state(tmp_path / "without", lambda run: "absent")
+    cited = _numbers_state(tmp_path / "with", lambda run: sorted(values[run]) if values[run] else values[run])
+    lesson = b.lesson(K, "check", since="2026-09-06", issues=(1, 2), history=[("check", "2026-09-06")])
+    base = report(without, lessons=[lesson])
+    new = report(cited, lessons=[lesson])
+    validate(base)
+    validate(new)
+    assert base.pop("lessons_cited")["attempts_unknown"] == base["attempts"]["scored"]
+    assert new.pop("lessons_cited")["attempts_with_citation"] == 4
+    assert new == base
+    # The scenario does exercise the numbers that must not move.
+    assert base["learned_check_catches"] == {"count": 1, "by_lesson": {L: 1}}
+    assert base["repeat"]["repeats"] > 0 and base["escape"]["escapes"] > 0
+
+
 def test_first_pass_cost_merge_and_post_pr(tmp_path):
     state = b.StateDir(tmp_path / "state")
     with_k(state, "101", 1, 0, verify="failure", published=True, pr=5)

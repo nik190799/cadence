@@ -33,6 +33,12 @@
   "new_class_rate": 0.5,
   "learned_check_catches": {"count": 0, "by_lesson": {}},
   "post_promotion_exposed_no_repeat": 0,
+  "lessons_cited": {
+    "attempts_with_citation": 1,
+    "attempts_unknown": 1,
+    "cited_and_absent": {"count": 1, "by_lesson": {"L-1a2b3c4d": 1}},
+    "cited_and_present": {"count": 0, "by_lesson": {}}
+  },
   "first_pass_verify": 0.5,
   "test_tampering_rate": 0.0,
   "merge_rate_30d": 0.0,

@@ -150,14 +150,17 @@ def observation(
     verify_result: str = "success",
     gate_step: str = "none",
     repo: str = REPO,
+    lessons_cited: Any = "absent",
 ) -> dict[str, Any]:
+    """``lessons_cited`` "absent" leaves the optional field out, as in an
+    observation booked before it existed; a list or None sets it."""
     if patch_sha256 == "default":
         patch_sha256 = sha256(f"patch {repo} {issue} {run_id} {attempt}")
     files = list(files)
     for e in edges:
         if not any(f["path"] == e["path"] for f in files):
             files.append(changed(e["path"], "M"))
-    return {
+    obs = {
         "schema": "cadence.observation/1",
         "repo": repo,
         "issue": issue,
@@ -189,6 +192,9 @@ def observation(
         "classes": [],
         "truncated": False,
     }
+    if lessons_cited != "absent":
+        obs["lessons_cited"] = lessons_cited
+    return obs
 
 
 def add_patch(path: str, lines: Sequence[str], *, context: Sequence[str] = ()) -> str:

@@ -225,6 +225,10 @@ jobs:
       proceed: ${{ steps.decide.outputs.proceed }}
       claimed: ${{ steps.claim.outputs.claimed }}
       claim_sha: ${{ steps.claim.outputs.claim_sha }}
+      # sha256 of the approved spec handed to the agent (cadence-input). A job
+      # output, so observe can check the spec it reads is that one: a leftover
+      # agent process could replace the artifact, not this.
+      spec_sha256: ${{ steps.collect.outputs.spec_sha256 }}
     env:
       ISSUE: ${{ needs.route.outputs.issue }}
       GH_TOKEN: ${{ github.token }}
@@ -259,6 +263,7 @@ jobs:
       - run: python -m pip install --quiet --disable-pip-version-check "pyyaml>=6,<7" "jsonschema>=4.18,<5"
 
       - name: Collect the approved spec and the sanitized issue
+        id: collect
         env:
           APPROVED_AT: ${{ github.event.comment.created_at }} # empty for workflow_dispatch
         run: |
@@ -298,6 +303,9 @@ jobs:
           if [ ! -s "$in/spec.md" ]; then
             stop no-spec "Not started: no factory spec was found on #$ISSUE before this approval. Add the \`factory\` label to get one, then reply \`/approve\`."
           fi
+          # observe records which learned lessons this spec cites, and checks
+          # the spec it reads against this sha256 first.
+          echo "spec_sha256=$(sha256sum "$in/spec.md" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Count runs already spending
         id: inflight
@@ -899,6 +907,9 @@ jobs:
   # nothing under work/ is ever imported or executed. The observation leaves
   # as a job output (not an artifact), so a leftover agent process cannot
   # swap it; ledger checks its sha256 and the schemas before booking it.
+  # It also reads the approved spec the agent got (gate's cadence-input
+  # artifact, checked against gate's spec_sha256 output) for lessons_cited:
+  # the active base lessons the spec names. Informational, never a catch.
   observe:
     needs: [route, gate, agent, verify]
     if: >-
@@ -961,6 +972,14 @@ jobs:
           name: cadence-result-${{ github.run_id }}
           path: ${{ runner.temp }}/cadence-result
 
+      # The approved spec the build used: gate's input artifact, as the agent
+      # got it. Read as data only, for lessons_cited (informational).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        continue-on-error: true # missing: lessons_cited is null (unknown)
+        with:
+          name: cadence-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/cadence-input
+
       - name: Apply the patch to a scratch worktree of the base
         id: apply
         run: |
@@ -983,6 +1002,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         env:
           APPLY_STATUS: ${{ steps.apply.outputs.status }}
+          SPEC_SHA256: ${{ needs.gate.outputs.spec_sha256 }}
         run: |
           patch="$RUNNER_TEMP/change/change.patch"
           if [ ! -f "$patch" ]; then
@@ -995,6 +1015,12 @@ jobs:
           fi
           if [ -f "$RUNNER_TEMP/cadence-result/claude-result.json" ]; then
             args+=(--result-json "$RUNNER_TEMP/cadence-result/claude-result.json")
+          fi
+          # The spec only with the sha256 gate recorded for it, which
+          # signals.py checks; otherwise lessons_cited is null (unknown).
+          spec="$RUNNER_TEMP/cadence-input/spec.md"
+          if [ -f "$spec" ] && [[ "$SPEC_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            args+=(--spec "$spec" --spec-sha256 "$SPEC_SHA256")
           fi
           out="$RUNNER_TEMP/observe"
           python -I "$GITHUB_WORKSPACE/base/tool/signals.py" observe \
@@ -1631,6 +1657,14 @@ jobs:
           name: cadence-result-retry-${{ github.run_id }}
           path: ${{ runner.temp }}/cadence-result
 
+      # The approved spec the build used: gate's input artifact, as the agent
+      # got it. Read as data only, for lessons_cited (informational).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        continue-on-error: true # missing: lessons_cited is null (unknown)
+        with:
+          name: cadence-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/cadence-input
+
       - name: Apply the patch to a scratch worktree of the base
         id: apply
         run: |
@@ -1653,6 +1687,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         env:
           APPLY_STATUS: ${{ steps.apply.outputs.status }}
+          SPEC_SHA256: ${{ needs.gate.outputs.spec_sha256 }}
         run: |
           patch="$RUNNER_TEMP/change/change.patch"
           if [ ! -f "$patch" ]; then
@@ -1665,6 +1700,12 @@ jobs:
           fi
           if [ -f "$RUNNER_TEMP/cadence-result/claude-result.json" ]; then
             args+=(--result-json "$RUNNER_TEMP/cadence-result/claude-result.json")
+          fi
+          # The spec only with the sha256 gate recorded for it, which
+          # signals.py checks; otherwise lessons_cited is null (unknown).
+          spec="$RUNNER_TEMP/cadence-input/spec.md"
+          if [ -f "$spec" ] && [[ "$SPEC_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            args+=(--spec "$spec" --spec-sha256 "$SPEC_SHA256")
           fi
           out="$RUNNER_TEMP/observe"
           python -I "$GITHUB_WORKSPACE/base/tool/signals.py" observe \

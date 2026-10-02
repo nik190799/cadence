@@ -24,6 +24,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -1180,6 +1181,45 @@ def test_pr_body_renders_metrics_numbers(tmp_path, git_env):
     body = out.read_text(encoding="utf-8")
     assert "- Repeat rate: 1.000 (1 of 1 opportunities; insufficient)" in body
     assert "- Escape rate: 1.000 (1 escapes)" in body
+    # These observations predate lessons_cited: every attempt is unknown.
+    report = json.loads(metrics_path.read_text(encoding="utf-8"))
+    scored = report["attempts"]["scored"]
+    assert (
+        "- Lessons cited by approved specs (informational; not a catch, not in any rate): "
+        f"0 attempt(s) cited one; cited and absent 0, cited and present 0; unknown for {scored} attempt(s)"
+    ) in body
+
+
+def _metrics_report(**extra: Any) -> dict[str, Any]:
+    return {
+        "attempts": {"scored": 3, "ops": 0, "deduped": 0},
+        "repeat": {"opportunities": 2, "repeats": 1, "rate": 0.5, "ci95": None, "status": "insufficient"},
+        "escape": {"escapes": 0, "rate": 0.0},
+        "learned_check_catches": {"count": 0, "by_lesson": {}},
+        "test_tampering_rate": 0.0,
+        **extra,
+    }
+
+
+def test_pr_body_shows_lessons_cited_on_one_informational_line() -> None:
+    cited = {
+        "attempts_with_citation": 1,
+        "attempts_unknown": 2,
+        "cited_and_absent": {"count": 1, "by_lesson": {DB_LID: 1}},
+        "cited_and_present": {"count": 0, "by_lesson": {}},
+    }
+    old = ladder._metrics_lines(_metrics_report())
+    new = ladder._metrics_lines(_metrics_report(lessons_cited=cited))
+    extra = [line for line in new if line not in old]
+    assert extra == [
+        "- Lessons cited by approved specs (informational; not a catch, not in any rate): "
+        "1 attempt(s) cited one; cited and absent 1, cited and present 0; unknown for 2 attempt(s)"
+    ]
+    # It sits under the catches it must not be read as, and changes no other line.
+    assert [line for line in new if line in old] == old
+    assert new.index(extra[0]) == new.index("- Learned check catches: 0") + 1
+    # A report from before the block (or a malformed one) adds no line.
+    assert ladder._metrics_lines(_metrics_report(lessons_cited="x")) == old
 
 
 def test_guard_refuses_a_new_learned_rule_other_than_the_proved_one(tmp_path, git_env, capsys):

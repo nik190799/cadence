@@ -177,6 +177,13 @@
         "pattern": "^(guarded|missing-test|test|gate|agent):[A-Za-z0-9_./@+:>-]{1,180}$"
       }
     },
+    "lessons_cited": {
+      "type": ["array", "null"],
+      "uniqueItems": true,
+      "maxItems": 200,
+      "items": { "type": "string", "pattern": "^L-[0-9a-f]{8}$" },
+      "description": "Optional; observations from before 2026-10-02 have none. The sorted lesson ids that the approved spec the build used names as exact tokens and that are active lessons (rung pattern or check) in the base commit's .cadence/lessons.yaml; ids in the spec that are not active lessons there are dropped. [] when the spec cites none; null (unknown) when the spec or the base lessons could not be read, or the spec's sha256 is not the one the gate recorded. Informational only: no repeat, escape or kill-criterion number reads it (docs/LEARNING.md)."
+    },
     "truncated": {
       "type": "boolean",
       "description": "True when an evidence list hit its cap or a file was too large to read."

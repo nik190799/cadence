@@ -975,8 +975,63 @@ def test_observe_retry_observes_like_observe() -> None:
         "change-retry-${{ github.run_id }}",
         "verify-log-retry-${{ github.run_id }}",
         "cadence-result-retry-${{ github.run_id }}",
+        # The retry builds the same approved spec: gate's one input artifact.
+        "cadence-input-${{ github.run_id }}",
         "observe-retry-${{ github.run_id }}",
     ]
+
+
+# ---- lessons_cited: the approved spec reaches observe as data ----
+
+
+def test_gate_records_the_sha256_of_the_spec_it_hands_to_the_agent() -> None:
+    gate = JOBS["gate"]
+    assert gate["outputs"]["spec_sha256"] == "${{ steps.collect.outputs.spec_sha256 }}"
+    collect = _step(gate, "Collect the approved spec")
+    assert collect["id"] == "collect"
+    run = collect["run"]
+    line = "echo \"spec_sha256=$(sha256sum \"$in/spec.md\" | cut -d ' ' -f 1)\" >> \"$GITHUB_OUTPUT\""
+    assert line in run
+    assert run.index(line) > run.index('> "$in/spec.md"')  # hashed after it is written
+    hand = _step(gate, "Hand the inputs to the agent job")
+    assert hand["with"]["name"] == "cadence-input-${{ github.run_id }}"
+    assert hand["with"]["path"] == "${{ runner.temp }}/cadence/input"
+    # Both builds read the spec from that one artifact.
+    for name in ("agent", "agent-retry"):
+        fetch = _step(JOBS[name], "Fetch the approved spec")
+        assert fetch["with"]["name"] == "cadence-input-${{ github.run_id }}"
+        assert fetch["with"]["path"] == "${{ runner.temp }}/cadence/input"
+
+
+@pytest.mark.parametrize("name", ["observe", "observe-retry"])
+def test_observe_reads_the_approved_spec_as_data_with_no_new_token(name: str) -> None:
+    """lessons_cited needs the spec the build used. It comes from gate's input
+    artifact, the one agent and agent-retry download, and counts only with
+    the sha256 gate recorded as a job output (a leftover agent process can
+    replace an artifact, not a job output). observe gains no secret, no
+    write token and no permission for it."""
+    job = JOBS[name]
+    assert job["permissions"] == {"contents": "read"}
+    assert _secrets(job) == set()
+    assert "github.token" not in _dump(job)
+    assert "create-github-app-token" not in _dump(job)
+    assert "gate" in job["needs"]
+    (download,) = [
+        s for s in job["steps"] if s.get("with", {}).get("name") == "cadence-input-${{ github.run_id }}"
+    ]
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["continue-on-error"] is True
+    assert download["with"]["path"] == "${{ runner.temp }}/cadence-input"
+    scan = _step(job, "Scan the attempt")
+    assert scan["env"]["SPEC_SHA256"] == "${{ needs.gate.outputs.spec_sha256 }}"
+    run = scan["run"]
+    assert 'spec="$RUNNER_TEMP/cadence-input/spec.md"' in run
+    assert '[[ "$SPEC_SHA256" =~ ^[0-9a-f]{64}$ ]]' in run
+    assert 'args+=(--spec "$spec" --spec-sha256 "$SPEC_SHA256")' in run
+    # The spec is handed to signals.py only: never run, sourced or printed.
+    for r in _runs(job):
+        assert not re.search(r"\b(bash|sh|source|python3?|cat|head|tail|less)\b[^\n]*cadence-input", r)
+        assert not re.search(r"\b(bash|sh|source|cat|head|tail|less)\b[^\n]*\$spec\b", r)
 
 
 def test_the_claim_and_the_ledger_wait_for_the_retry() -> None:

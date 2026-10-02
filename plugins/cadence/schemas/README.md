@@ -61,7 +61,10 @@ import-shaped), `guarded` operations, boundary `rule_hits` on added lines,
 and `failing_tests` from the verify log. `classes` lists the classes
 observe derives itself (guarded, missing-test, test, gate, agent);
 import edges become classes only once something seeds them, so the
-ladder and metrics recompute them from the evidence.
+ladder and metrics recompute them from the evidence. The optional
+`lessons_cited` (added 2026-10-02; older observations have none) lists
+the active base lessons the approved spec names, `[]` for none and
+`null` when unknown. It is informational only.
 
 ### `classify.schema.json` (new)
 
@@ -91,7 +94,11 @@ retro PR.
 
 The output of `tool/metrics.py report`: repeat rate and escape rate
 (with Wilson intervals once there are enough opportunities), per-family
-numbers, post-PR numbers, and the kill-criterion support numbers.
+numbers, post-PR numbers, and the kill-criterion support numbers. The
+optional `lessons_cited` block (added 2026-10-02) counts the lessons the
+approved specs cited, split into cited and absent and cited and present,
+plus the attempts where this is unknown. It is informational: no other
+number reads it.
 
 ## Status
 
