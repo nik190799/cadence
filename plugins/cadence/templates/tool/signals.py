@@ -24,8 +24,18 @@ Commands (``python tool/signals.py <cmd> --help`` for every option):
               ``--work-dir`` (the base commit with ``change.patch`` applied
               by ``git apply --index``) against HEAD, the base rules in
               ``--base-dir/.cadence/cadence.yaml``, the verify logs and the
-              agent's result file. Prints ``{"findings", "patch_sha256",
-              "bundle_chars"}``. Exit 0, or 2 on bad input (nothing written).
+              agent's result file. With ``--spec`` (the approved spec the
+              build used; ``--spec-sha256`` is the sha256 the gate recorded
+              for it) it also records ``lessons_cited``: the sorted lesson
+              ids that appear in the spec as exact tokens (LESSON_TOKEN_RE)
+              and are active lessons (rung pattern or check, id =
+              lesson_id(class_key)) in ``--base-dir/.cadence/lessons.yaml``;
+              any other id in the spec is dropped. ``null`` (unknown) when
+              there is no spec, its sha256 does not match, or either file
+              cannot be read; ``[]`` when the spec cites no active lesson.
+              Informational only (docs/LEARNING.md). Prints ``{"findings",
+              "patch_sha256", "bundle_chars"}``. Exit 0, or 2 on bad input
+              (nothing written).
     finalize  Checks the bundle's sha256, decodes and validates it
               (observation.schema.json, retro.schema.json, ids that match
               the flags), records the publish (``--pr``, ``--published-sha``)
@@ -149,6 +159,10 @@ POST_PR_FAMILIES = ("edit", "review")
 OPS_FAMILIES = ("gate", "agent", "pr")
 RULE_ID_RE = r"^[LB]-[0-9a-f]{8}$"
 LESSON_ID_RE = r"^L-[0-9a-f]{8}$"
+# A lesson id as a whole token in free text (the approved spec): not glued to
+# a letter, digit, "_" or "-" on either side, so L-1234abcd5 or XL-1234abcd
+# never match.
+LESSON_TOKEN_RE = r"(?<![A-Za-z0-9_-])L-[0-9a-f]{8}(?![A-Za-z0-9_-])"
 AREA_SEG_RE = r"^[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]{0,63}$"
 PKG_RE = r"^(@[A-Za-z0-9][A-Za-z0-9._-]{0,63}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 LANG_FAMILY = {
@@ -192,6 +206,7 @@ MAX_STATE_JSON_BYTES = 262144
 
 _CLASS_KEY = re.compile(CLASS_KEY_RE)
 _RULE_ID = re.compile(RULE_ID_RE)
+_LESSON_TOKEN = re.compile(LESSON_TOKEN_RE)
 _AREA_SEG = re.compile(AREA_SEG_RE)
 _PKG = re.compile(PKG_RE)
 _STATE_PATH = re.compile(STATE_PATH_RE)
@@ -239,6 +254,10 @@ MAX_FAILING_TESTS = 20
 MAX_BUNDLE_CHARS = 700_000
 MAX_BUNDLE_JSON_BYTES = 8 * 1024 * 1024
 MAX_READ_BYTES = 1024 * 1024  # files read from the scanned tree
+MAX_SPEC_BYTES = 1024 * 1024  # the approved spec (a GitHub comment is at most 65536 characters)
+MAX_LESSONS_BYTES = 4 * 1024 * 1024  # the base .cadence/lessons.yaml
+MAX_LESSONS_CITED = 200  # lessons.schema.json caps lessons.yaml at 200 lessons
+ACTIVE_RUNGS = ("pattern", "check")
 MAX_LOG_BYTES = 2 * 1024 * 1024  # each verify log
 MAX_DIFF_BYTES = 64 * 1024 * 1024
 MAX_ITEMS = 30
@@ -340,6 +359,11 @@ def _positive_int(value: Any) -> int | None:
 
 def valid_class_key(key: Any) -> bool:
     return isinstance(key, str) and len(key) <= 200 and bool(_CLASS_KEY.fullmatch(key))
+
+
+def lesson_id(class_key: str) -> str:
+    """``L-`` + the first 8 hex digits of the class's lesson UUID (as tool/ladder.py)."""
+    return "L-" + uuid.uuid5(NS_CADENCE, "lesson|" + class_key).hex[:8]
 
 
 def area_of_dir(dir_path: str, depth: int) -> str | None:
@@ -1309,6 +1333,10 @@ class ObserveInput:
     result_json: Path | None
     config: ledger.LearningConfig
     now: float
+    # The approved spec the build used, and the sha256 the gate recorded for
+    # it. No spec: lessons_cited is null (unknown).
+    spec: Path | None = None
+    spec_sha256: str | None = None
 
 
 @dataclass
@@ -1352,6 +1380,87 @@ def _base_rules(base_dir: Path) -> tuple[list[Any], str | None]:
         print(f"WARN: base boundary rules unusable, no rule hits recorded: {exc}", file=sys.stderr)
         return [], digest
     return rules, digest
+
+
+def active_lessons(base_dir: Path) -> set[str] | None:
+    """Ids of the active lessons (rung pattern or check) in the base
+    ``.cadence/lessons.yaml``: empty when the file does not exist, None when
+    it cannot be read or is not a lessons file. An entry counts only when its
+    id is ``lesson_id(class_key)`` for a headline class key, the rule the
+    ladder holds every lesson to."""
+    path = base_dir / ".cadence" / "lessons.yaml"
+    if _lstat_mode(path) is None:
+        return set()
+    data = _read_regular(path, MAX_LESSONS_BYTES)
+    if data is None:
+        print(
+            "WARN: the base .cadence/lessons.yaml is not a regular file of at most 4 MiB; "
+            "lessons_cited is unknown",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        doc = yaml.safe_load(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, yaml.YAMLError, ValueError, RecursionError) as exc:
+        print(
+            f"WARN: the base .cadence/lessons.yaml is unreadable ({exc.__class__.__name__}); "
+            "lessons_cited is unknown",
+            file=sys.stderr,
+        )
+        return None
+    if doc is None:
+        return set()
+    lessons = doc.get("lessons") if isinstance(doc, dict) else None
+    if not isinstance(lessons, list):
+        print(
+            "WARN: the base .cadence/lessons.yaml has no lessons list; lessons_cited is unknown",
+            file=sys.stderr,
+        )
+        return None
+    active: set[str] = set()
+    for lesson in lessons:
+        if not isinstance(lesson, dict) or lesson.get("rung") not in ACTIVE_RUNGS:
+            continue
+        key, lid = lesson.get("class_key"), lesson.get("id")
+        if (
+            valid_class_key(key)
+            and key.split(":", 1)[0] in HEADLINE_FAMILIES
+            and isinstance(lid, str)
+            and lid == lesson_id(key)
+        ):
+            active.add(lid)
+    return active
+
+
+def lessons_cited(spec: Path | None, spec_sha256: str | None, base_dir: Path) -> list[str] | None:
+    """The lesson ids the approved spec names that are active lessons at the
+    base, sorted and unique; None (unknown) when the spec or the base
+    lessons cannot be read, or the spec is not the one the gate recorded.
+
+    The spec is model-written text a human approved: it is only searched for
+    exact id tokens, and an id that is not an active base lesson is dropped,
+    so a spec cannot invent a citation."""
+    if spec is None:
+        return None
+    data = _read_regular(spec, MAX_SPEC_BYTES)
+    if data is None:
+        print(
+            f"WARN: --spec {spec} is missing, not a regular file or over 1 MiB; lessons_cited is unknown",
+            file=sys.stderr,
+        )
+        return None
+    if spec_sha256 is not None and sha256_hex(data) != spec_sha256.lower():
+        print(
+            "WARN: --spec does not match --spec-sha256, so it is not the spec the gate handed "
+            "to the build; lessons_cited is unknown",
+            file=sys.stderr,
+        )
+        return None
+    active = active_lessons(base_dir)
+    if active is None:
+        return None
+    named = set(_LESSON_TOKEN.findall(data.decode("utf-8", "replace")))
+    return sorted(named & active)[:MAX_LESSONS_CITED]
 
 
 def _git_ok(git: Runner, cwd: Path, *args: str) -> bytes:
@@ -1643,6 +1752,9 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
             "failing_tests": capped([{"path": p} for p in failing]),
         },
         "classes": classes,
+        # Informational: which learned lessons the approved spec cited. No
+        # repeat, escape or kill-criterion number reads it (docs/LEARNING.md).
+        "lessons_cited": lessons_cited(inp.spec, inp.spec_sha256, inp.base_dir),
         "truncated": False,
     }
     observation["truncated"] = truncated
@@ -3500,6 +3612,12 @@ def _build_parser() -> argparse.ArgumentParser:
     obs.add_argument("--verify-result", choices=JOB_RESULTS, required=True)
     obs.add_argument("--verify-log-dir", type=Path)
     obs.add_argument("--result-json", type=Path)
+    obs.add_argument(
+        "--spec", type=Path, help="the approved spec the build used; without it lessons_cited is null"
+    )
+    obs.add_argument(
+        "--spec-sha256", type=_sha64_arg, help="the sha256 the gate recorded for --spec"
+    )
     obs.add_argument("--config", type=Path, help="default: <base-dir>/.cadence/factory.yaml")
     obs.add_argument("--schema-dir", type=Path)
     obs.add_argument("--now", type=_epoch)
@@ -3571,6 +3689,8 @@ def _cmd_observe(args: argparse.Namespace, now: float) -> int:
     for name in ("base_dir", "work_dir"):
         if not getattr(args, name).is_dir():
             raise SignalsError(f"--{name.replace('_', '-')} {getattr(args, name)} is not a directory")
+    if args.spec_sha256 is not None and args.spec is None:
+        raise SignalsError("--spec-sha256 needs --spec")
     config = args.config or args.base_dir / ".cadence" / "factory.yaml"
     inp = ObserveInput(
         base_dir=args.base_dir,
@@ -3588,6 +3708,8 @@ def _cmd_observe(args: argparse.Namespace, now: float) -> int:
         result_json=args.result_json,
         config=load_learning(config),
         now=now,
+        spec=args.spec,
+        spec_sha256=args.spec_sha256.lower() if args.spec_sha256 else None,
     )
     observation, findings = observe(inp)
     observation, bundle = fit_bundle(observation, findings)

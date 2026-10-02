@@ -68,5 +68,6 @@
     "test:tests/unit/order.test.ts",
     "gate:test"
   ],
+  "lessons_cited": ["L-1a2b3c4d"],
   "truncated": false
 }

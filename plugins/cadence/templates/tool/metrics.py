@@ -49,6 +49,14 @@ Definitions (headline families: import-edge, guarded, missing-test, test):
       check's evidence, on or after its promotion, where its L- rule hit.
       post_promotion_exposed_no_repeat: such attempts exposed to a promoted
       lesson's class that did not repeat it.
+    - lessons_cited (informational; no other number reads it): over the
+      scored attempts, those whose observation recorded which active
+      lessons the approved spec cited (lessons_cited a list) versus unknown
+      (null, or an observation from before the field). For each cited
+      lesson L of a known attempt a: "present" when C(a) holds L's class
+      (lesson_id(k) == L for some k in C(a)), else "absent". Absent is not
+      prevention: a may never have touched L's area. Prevention is measured
+      by the rules-on vs rules-frozen eval (compare), not here.
     - first_pass_verify: share of issues whose first attempt passed verify.
       test_tampering_rate: share of attempts that modify or delete files
       under a test root. merge_rate_30d: published PRs merged within 30 days
@@ -349,6 +357,36 @@ def _post_pr(state: Any, order: str, window: int) -> dict[str, Any]:
     }
 
 
+def _lessons_cited(sc: Score) -> dict[str, Any]:
+    """Informational: the lessons the approved specs cited, and whether each
+    cited lesson's class still occurs among the attempt's classes C(a).
+
+    A lesson's id is ``lesson_id`` of its class key, so "present" needs no
+    lookup: some class k of the attempt has lesson_id(k) == the cited id.
+    Unknown attempts (lessons_cited null or absent) are counted as unknown,
+    never as absent. Nothing here feeds RR, ER or learned_check_catches."""
+    with_citation = unknown = 0
+    absent: dict[str, int] = {}
+    present: dict[str, int] = {}
+    for a in sc.ordered:
+        cited = a.obs.lessons_cited
+        if cited is None:
+            unknown += 1
+            continue
+        if cited:
+            with_citation += 1
+        ids = {ladder.lesson_id(k) for k in sc.classes[a.run]}
+        for lid in cited:
+            bucket = present if lid in ids else absent
+            bucket[lid] = bucket.get(lid, 0) + 1
+    return {
+        "attempts_with_citation": with_citation,
+        "attempts_unknown": unknown,
+        "cited_and_absent": {"count": sum(absent.values()), "by_lesson": dict(sorted(absent.items()))},
+        "cited_and_present": {"count": sum(present.values()), "by_lesson": dict(sorted(present.items()))},
+    }
+
+
 def _merge_rate(state: Any, now: datetime) -> float | None:
     published: dict[int, datetime] = {}
     for record in state.prs:
@@ -550,6 +588,7 @@ def build_report(
         "new_class_rate": _r(new_classes / scored) if scored else None,
         "learned_check_catches": {"count": sum(catches.values()), "by_lesson": catches},
         "post_promotion_exposed_no_repeat": no_repeat,
+        "lessons_cited": _lessons_cited(sc),
         "first_pass_verify": first_pass,
         "test_tampering_rate": _rate(tampered, scored),
         "merge_rate_30d": _merge_rate(state, ladder.to_utc(now)),

@@ -96,6 +96,25 @@ ids, results and these evidence lists, each capped at 200 entries:
   fire on added lines.
 - `failing_tests`: test files named in the verify log (tier B).
 
+It also records `lessons_cited`, an optional field added on 2026-10-02
+(older observations do not have it and stay valid). It lists the lesson ids
+that the approved spec the build used names as whole tokens (`L-` plus 8
+hex digits), sorted and without duplicates. An id counts only if it is an
+active lesson (rung `pattern` or `check`, with `id` equal to
+`lesson_id(class_key)`) in `.cadence/lessons.yaml` at the attempt's base
+commit. Any other id in the spec is dropped, so a spec cannot invent a
+citation. `[]` means the spec cites no active lesson. `null` means unknown:
+there was no spec, its sha256 is not the one `gate` recorded, or the base
+`lessons.yaml` could not be read. The field is informational; see
+[Lessons cited](#lessons-cited-informational). Update `tool/signals.py`
+and `.cadence/observation.schema.json` together: an older schema rejects
+the new field, and `observe` then fails loudly instead of booking. Update
+`tool/metrics.py`, `tool/ladder.py` and `.cadence/metrics.schema.json` in
+the same commit: an older metrics schema rejects the new report block (no
+metrics snapshot, no metrics in the retro PR body), and with an older
+observation schema metrics and the ladder count every observation that
+has the field as unreadable.
+
 ### Class keys
 
 Code builds every key as `family:body`. Identical strings mean the same
@@ -242,6 +261,13 @@ worktree of the base commit and only reads the result:
 - From the verify log it takes the failing test files and verify's
   `FAIL: <step>` line, matching exact shapes only (tier B).
 - The agent's stop reason becomes `agent:<subtype>`.
+- For `lessons_cited` it reads the approved spec as data. This is the
+  `spec.md` that `gate` put in the `cadence-input` artifact, the same file
+  `agent` and `agent-retry` build from. `observe` uses it only when its
+  sha256 equals `gate`'s `spec_sha256` job output: a leftover agent process
+  could replace the artifact, but it cannot change a job output. `observe`
+  needs no new secret, token or permission for this. The spec is searched
+  for lesson-id tokens and nothing else; it is never run or printed.
 
 The observation and findings leave as a job output, so the agent cannot swap
 them. `ledger` then:
@@ -539,6 +565,9 @@ missing-test and test.
   - cost per attempt and per merged PR (spec, build and learn spend)
   - new-class rate
   - counts per class
+- **Informational only, not kill-criterion support:** `lessons_cited`, the
+  lessons the approved specs cited (see
+  [Lessons cited](#lessons-cited-informational)).
 
 **Statistics.**
 
@@ -573,12 +602,71 @@ missing-test and test.
   - the on arm's median cost is at most 1.25 × the frozen arm's.
 - **Ablation.** Results are also split by family (checks vs patterns).
 
+### Lessons cited (informational)
+
+The report has one more block, `lessons_cited`. It is informational and
+feeds no other number:
+
+```json
+"lessons_cited": {
+  "attempts_with_citation": 1,
+  "attempts_unknown": 2,
+  "cited_and_absent":  {"count": 1, "by_lesson": {"L-f356387a": 1}},
+  "cited_and_present": {"count": 0, "by_lesson": {}}
+}
+```
+
+It covers the same scored attempts as everything else: the same `--since`,
+and the same deduplication by `(issue, patch_sha256)`, keeping the earliest
+observation's value.
+
+- `attempts_with_citation`: the attempts whose spec cited at least one
+  active lesson.
+- `attempts_unknown`: the attempts whose `lessons_cited` is `null` or
+  missing. They are never counted as absent.
+- For each lesson L that a known attempt a cited:
+  - **absent** when L's class is not among C(a), the classes metrics
+    computes with the detector set;
+  - **present** when it is, meaning the agent repeated the class despite
+    the citation.
+- A lesson's id is `lesson_id(class_key)`, so "L's class is in C(a)" means
+  that `lesson_id(k)` equals L for some k in C(a). No lookup is needed.
+- `ladder.py pr-body` shows the block as one line under Metrics, marked
+  informational.
+
+**Why it is informational (decided 2026-10-02).** On the sandbox's issue
+#8, the intake spec cited check `L-f356387a`, said the issue's design would
+fail the gate, and redesigned it. The build never added the edge, so
+nothing reached the gate and `learned_check_catches` stayed 0. That
+prevention is now recorded here, but it does not count toward a kill
+criterion, and it is not added to `learned_check_catches`, the repeat
+rate or the escape rate:
+
+- **Absent does not mean prevented.** The agent might not have added the
+  edge anyway, or the change might never have needed that area. Nothing
+  here sees the counterfactual.
+- **The spec writer controls the count.** The spec is written by a model.
+  If citations counted toward the gate, citing more lessons would move a
+  kill-criterion number.
+- **The criterion asks for a catch.** "A retro rule that later caught a
+  real repeat" needs a real repeat stopped by the rule. A citation is not
+  one.
+
+**How prevention is measured.** The rules-on vs rules-frozen eval above
+measures prevention. Both arms get the same tickets and are scored with
+the same detector set. The frozen arm shows how often a class recurs
+without the lessons, and the on arm shows how often it recurs with them.
+RR_frozen − RR_on is the prevention effect, whether a lesson worked at
+spec time, during the build, or at the gate. No kill criterion was widened
+for this.
+
 ## Security
 
 | Threat | Control |
 |---|---|
 | Agent code in `verify` writes to `GITHUB_OUTPUT`, `GITHUB_ENV` and the log | `failed_step` and the log are tier B. `publish` maps `failed_step` to a fixed enum before posting it. `observe` recomputes guarded paths and rule hits from the patch |
-| A leftover agent process replaces an artifact | `observe` passes its result as a job output. `ledger` stores the patch only if its sha256 matches |
+| A leftover agent process replaces an artifact | `observe` passes its result as a job output. `ledger` stores the patch only if its sha256 matches. `observe` reads the approved spec only if its sha256 equals `gate`'s `spec_sha256` job output; otherwise `lessons_cited` is `null` |
+| A spec that names lesson ids to inflate `lessons_cited` | Only exact `L-` tokens that are active lessons in the base commit's `lessons.yaml` count, so a spec cannot invent one. The field is informational: no rate, catch or kill criterion reads it, so citing more lessons moves no gate number |
 | Hostile files in the scanned tree | `observe` runs base code (`python -I`, base config). It reads only regular files in the patch, up to 1 MB each, skips symlinks, and never executes anything in `work/` |
 | `emit_rule.py` as a write sink | `where` and `forbidden` use a fixed character set, with no `..` and no `tests/fixtures` prefix. The input must be one import-shaped line, matched by strict per-language patterns. The sample path must stay inside the fixture. Format checks are on. Apply preserves the file's text and checks the parsed result. The checker skips `tests/fixtures/retro/` |
 | The retro PR as an escalation path | **Path allowlist:** `.cadence/cadence.yaml`, `.cadence/lessons.yaml`, `docs/PATTERNS.md`, `tests/fixtures/retro/**`. **Semantic guard:** `cadence.yaml` changes only in `L-` entries; `PATTERNS.md` changes only inside its section; fixtures are new directories with no symlinks or executables. The guard runs twice, the second time before `git apply` in the job that holds the token. `factory.yaml` (budget, autonomy) can never be written |
@@ -597,24 +685,24 @@ missing-test and test.
 
 | File | Change |
 |---|---|
-| `plugins/cadence/templates/tool/signals.py` | new: `observe`, `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config`, `excerpt` |
-| `plugins/cadence/templates/tool/ladder.py` | new: `plan` (skips failed plans), `apply` (up to three samples; `--verify-failed`), `guard`, `pr-body` |
-| `plugins/cadence/templates/tool/metrics.py` | new: `report`, `compare` |
+| `plugins/cadence/templates/tool/signals.py` | new: `observe` (`--spec`, `--spec-sha256` for `lessons_cited`), `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config`, `excerpt` |
+| `plugins/cadence/templates/tool/ladder.py` | new: `plan` (skips failed plans), `apply` (up to three samples; `--verify-failed`), `guard`, `pr-body` (an informational `lessons_cited` line) |
+| `plugins/cadence/templates/tool/metrics.py` | new: `report` (with the informational `lessons_cited` block), `compare` |
 | `plugins/cadence/templates/tool/emit_rule.py` | provenance, `--must-pass-root`, `--rule-id`, `--retire`, `--replay`, `--json`, text-preserving apply, input hardening |
 | `plugins/cadence/templates/tool/check_boundaries.py` | rule ids; `paths=`; relative skip dirs; skips `tests/fixtures/retro/` and symlinks; resolves relative TS/JS and Python imports |
 | `plugins/cadence/templates/tool/ledger.py` | `--stage`, `--pr`, `--published-sha`, `--base-sha`, `check --pool learn`, `load_learning()`, `retry.on_dod_fail` |
 | `plugins/cadence/templates/tool/reconcile.py` | runs titled `#sweep` and `#learn` name no issue |
 | `plugins/cadence/schemas/retro.schema.json` | `factory` object; stricter `violation_sample` |
-| `plugins/cadence/schemas/observation.schema.json` | new |
+| `plugins/cadence/schemas/observation.schema.json` | new; optional `lessons_cited` |
 | `plugins/cadence/schemas/classify.schema.json` | new |
 | `plugins/cadence/schemas/lessons.schema.json` | new |
 | `plugins/cadence/schemas/retro-plan.schema.json` | new; reason `verify-fallback`, optional `alternates` |
-| `plugins/cadence/schemas/metrics.schema.json` | new |
+| `plugins/cadence/schemas/metrics.schema.json` | new; optional `lessons_cited` block |
 | `plugins/cadence/schemas/cadence-yaml.schema.json` | optional boundary `id` |
 | `plugins/cadence/skills/cadence-findings/SKILL.md` | new: read-only classifier |
 | `plugins/cadence/skills/cadence-retro/SKILL.md` | factory mode |
 | `plugins/cadence/skills/cadence-intake/SKILL.md` | reads `lessons.yaml` |
-| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; every action pinned to a SHA |
+| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; `gate` outputs the approved spec's `spec_sha256`, and `observe` and `observe-retry` read that spec from `cadence-input`; every action pinned to a SHA |
 | `plugins/cadence/templates/factory.yaml.tmpl` | `learning:` and `retry:` blocks |
 | `plugins/cadence/templates/docs/PATTERNS.md.tmpl` | learned section |
 

@@ -232,6 +232,8 @@ def test_lesson_id_is_emit_rules_short_id_and_the_fixture_name(class_key: str) -
     finding_id = str(uuid.uuid5(NS_CADENCE, "lesson|" + class_key))
     expected = "L-" + uuid.uuid5(NS_CADENCE, "lesson|" + class_key).hex[:8]
     assert ladder.lesson_id(class_key) == expected
+    # observe checks the lessons a spec cites against the same id rule.
+    assert _module("signals").lesson_id(class_key) == expected
     assert re.fullmatch(LESSON_ID_RE, expected)
     short = emit_rule._short_id({"id": finding_id})
     assert short == expected[2:]
@@ -349,6 +351,11 @@ REJECT_CASES = [
     ("observation.schema.json", "observation.json", ["classes"], ["import-edge:src/a->src/b"], False),
     ("observation.schema.json", "observation.json", ["area_depth"], 5, False),
     ("observation.schema.json", "observation.json", ["gate_step"], "lint-ish", False),
+    # lessons_cited holds lesson ids only (or null), each once.
+    ("observation.schema.json", "observation.json", ["lessons_cited"], ["B-1a2b3c4d"], False),
+    ("observation.schema.json", "observation.json", ["lessons_cited"], ["L-1a2b3c4d", "L-1a2b3c4d"], False),
+    ("observation.schema.json", "observation.json", ["lessons_cited"], "L-1a2b3c4d", False),
+    ("observation.schema.json", "observation.json", ["lessons_cited"], ["L-1a2b3c4d is binding"], False),
     ("classify.schema.json", "classify.json", ["items", 0, "reason"], "free text", False),
     ("classify.schema.json", "classify.json", ["items", 0, "category"], "praise", False),
     ("classify.schema.json", "classify.json", ["items", 0, "confidence"], 1.5, False),
@@ -365,6 +372,9 @@ REJECT_CASES = [
     ("metrics.schema.json", "metrics.json", ["repeat", "status"], "great", False),
     ("metrics.schema.json", "metrics.json", ["repeat", "rate"], 1.5, False),
     ("metrics.schema.json", "metrics.json", ["by_family", "review"], {}, False),
+    ("metrics.schema.json", "metrics.json", ["lessons_cited", "cited_and_absent", "by_lesson"], {"B-1a2b3c4d": 1}, False),
+    ("metrics.schema.json", "metrics.json", ["lessons_cited", "attempts_unknown"], None, True),
+    ("metrics.schema.json", "metrics.json", ["lessons_cited", "prevented"], 1, False),
     ("cadence-yaml.schema.json", "cadence.yaml", ["boundaries", 1, "id"], "L-XYZ", False),
 ]
 
@@ -375,6 +385,41 @@ def test_schema_rejects_what_the_contract_forbids(
 ) -> None:
     schema = _schema(schema_name)
     assert _errors(schema, _broken(golden_name, path, value, delete)), (golden_name, path)
+
+
+@pytest.mark.parametrize(
+    "schema_name, golden_name, field, values",
+    [
+        # Observations booked before lessons_cited existed stay valid, and
+        # null (unknown) and [] (none cited) are both allowed.
+        ("observation.schema.json", "observation.json", "lessons_cited", [None, []]),
+        # So do metrics reports from before the informational block.
+        ("metrics.schema.json", "metrics.json", "lessons_cited", []),
+    ],
+)
+def test_lessons_cited_is_optional_and_backward_compatible(
+    schema_name: str, golden_name: str, field: str, values: list[Any]
+) -> None:
+    schema = _schema(schema_name)
+    assert _errors(schema, _broken(golden_name, [field], delete=True)) == []
+    for value in values:
+        assert _errors(schema, _broken(golden_name, [field], value)) == []
+
+
+@pytest.mark.parametrize(
+    "text, ids",
+    [
+        ("Applies: `.cadence/lessons.yaml` L-1a2b3c4d (check): ...", ["L-1a2b3c4d"]),
+        ("(L-1a2b3c4d), L-5e6f7a8b.", ["L-1a2b3c4d", "L-5e6f7a8b"]),
+        ("L-1a2b3c4d5 XL-1a2b3c4d L-1a2b3c4d_x L-1a2b3c4d-y L-1A2B3C4D l-1a2b3c4d", []),
+        ("-L-1a2b3c4d _L-1a2b3c4d 9L-1a2b3c4d", []),
+    ],
+)
+def test_lesson_token_matches_whole_ids_only(text: str, ids: list[str]) -> None:
+    signals = _module("signals")
+    assert re.findall(signals.LESSON_TOKEN_RE, text) == ids
+    for found in ids:
+        assert re.fullmatch(LESSON_ID_RE, found)
 
 
 def test_golden_findings_and_plan_follow_the_id_and_time_rules() -> None:

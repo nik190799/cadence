@@ -746,6 +746,9 @@ class Observation:
     guarded: tuple[GuardedOp, ...]
     rule_hits: tuple[RuleHit, ...]
     failing_tests: tuple[str, ...]
+    # Informational (metrics.py's lessons_cited block only): the active
+    # lessons the approved spec cited; None when unknown or not recorded.
+    lessons_cited: tuple[str, ...] | None = None
 
     @property
     def is_attempt(self) -> bool:
@@ -913,6 +916,16 @@ def parse_observation(raw: Any, stem: str | None = None) -> Observation:
         path = item.get("path")
         _need(isinstance(path, str) and _SAFE_PATH.fullmatch(path), "failing_tests.path")
         tests.append(path)
+    cited = raw.get("lessons_cited")  # optional; absent or null means unknown
+    _need(
+        cited is None
+        or (
+            isinstance(cited, list)
+            and len(cited) <= 200
+            and all(isinstance(lid, str) and _LESSON_ID.fullmatch(lid) for lid in cited)
+        ),
+        "lessons_cited",
+    )
     return Observation(
         run=run,
         run_id=run_id,
@@ -933,6 +946,7 @@ def parse_observation(raw: Any, stem: str | None = None) -> Observation:
         guarded=tuple(guarded),
         rule_hits=tuple(hits),
         failing_tests=tuple(tests),
+        lessons_cited=None if cited is None else tuple(sorted(set(cited))),
     )
 
 
@@ -3066,14 +3080,26 @@ def _metrics_lines(metrics: dict[str, Any]) -> list[str]:
     status = rep.get("status") if rep.get("status") in ("ok", "insufficient", "incomplete") else "n/a"
     catches = metrics.get("learned_check_catches")
     catches_n = catches.get("count") if isinstance(catches, dict) else None
-    return [
+    lines = [
         f"- Attempts scored: {_num(att.get('scored'))}",
         f"- Repeat rate: {_num(rep.get('rate'))} ({_num(rep.get('repeats'))} of "
         f"{_num(rep.get('opportunities'))} opportunities; {status})",
         f"- Escape rate: {_num(esc.get('rate'))} ({_num(esc.get('escapes'))} escapes)",
         f"- Learned check catches: {_num(catches_n)}",
-        f"- Test-tampering rate: {_num(metrics.get('test_tampering_rate'))}",
     ]
+    # Informational only: a report from before 2026-10-02 has no such block.
+    cited = metrics.get("lessons_cited")
+    if isinstance(cited, dict):
+        absent = cited.get("cited_and_absent") if isinstance(cited.get("cited_and_absent"), dict) else {}
+        present = cited.get("cited_and_present") if isinstance(cited.get("cited_and_present"), dict) else {}
+        lines.append(
+            "- Lessons cited by approved specs (informational; not a catch, not in any rate): "
+            f"{_num(cited.get('attempts_with_citation'))} attempt(s) cited one; "
+            f"cited and absent {_num(absent.get('count'))}, cited and present {_num(present.get('count'))}; "
+            f"unknown for {_num(cited.get('attempts_unknown'))} attempt(s)"
+        )
+    lines.append(f"- Test-tampering rate: {_num(metrics.get('test_tampering_rate'))}")
+    return lines
 
 
 def render_pr_body(

@@ -58,6 +58,16 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   `cadence.yml.tmpl` declares `permissions: contents: read`.
 - `docs/factory-auth.md`: research on replacing the stored
   `ANTHROPIC_API_KEY` with GitHub Actions OIDC (no workflow change).
+- `lessons_cited`, an informational record of spec-time prevention.
+  `signals.py observe --spec --spec-sha256` stores the active base lessons
+  that the approved spec names. Ids that are not active lessons are dropped,
+  and the value is `null` when unknown. `gate` outputs the spec's sha256,
+  and `observe` and `observe-retry` read the spec from `cadence-input` with
+  no new token. `metrics.py report` adds a `lessons_cited` block, and the
+  retro PR body shows it on one line. Optional fields in
+  `observation.schema.json` and `metrics.schema.json`. No existing number
+  and no kill criterion changes; prevention is measured by the rules-on vs
+  rules-frozen eval.
 
 ## [0.3.0-rc.2] — 2026-05-27
 

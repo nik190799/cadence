@@ -95,9 +95,21 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
      file has no imports (PR #9, `cadence/verify` green, left open for review).
    - Metrics: 3 attempts, 3 observed; repeats 1 of 2 opportunities (0.5);
      `learned_check_catches` 0, because the rule prevented the repeat at spec time
-     instead of catching it at the gate. Decide whether a spec-time prevention
-     (lesson cited and class absent) should count toward the Nov 13 criterion
-     "a retro rule that later caught a real repeat"; today no metric records it.
+     instead of catching it at the gate.
+   - **Decided 2026-10-02: a spec-time prevention does not count** toward the
+     Nov 13 criterion "a retro rule that later caught a real repeat". No kill
+     criterion is widened, and it is not added to `learned_check_catches` or
+     to the repeat or escape rates. "Cited and absent" is not proof of
+     prevention: nothing shows what the agent would have done otherwise, and a
+     model writes the spec, so it would control the count. Prevention is
+     measured by the rules-on vs rules-frozen eval (RR_frozen − RR_on), which
+     already exists. It is now recorded for audit only (built on `factory-1d`,
+     not yet run live): `observe` stores `lessons_cited` (the active base lessons
+     the approved spec names, checked against `gate`'s `spec_sha256`; `null`
+     when unknown); `metrics.py report` adds an informational `lessons_cited`
+     block (cited and absent / cited and present); the retro PR body shows it
+     on one line marked informational. See "Lessons cited" in
+     [docs/LEARNING.md](docs/LEARNING.md).
    - Live bug fixed: `retro-publish` (and `classify` in a dispatch) never ran,
      because GitHub's implicit `success()` skips a job when any upstream job was
      skipped (classify is skipped whenever labelling is off). Both now use
