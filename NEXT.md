@@ -176,6 +176,43 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - Docs: the key check in [docs/FACTORY.md](docs/FACTORY.md); how to check a secret by its length in [docs/factory-sandbox-setup.md](docs/factory-sandbox-setup.md).
 - **Next (owner):** set the product repo's key from your own terminal (`gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>`, paste at the prompt), install `factory-1g` there, and check the next model run prints a length of about 100. Today's three $2 records stay on `cadence/state` (records are never changed), so the day's budget recovers at 00:00 UTC.
 
+## Product backlog: generic fixes for every factory user (added 2026-10-03)
+
+Findings from real repos become product changes that help every factory user,
+never one-repo tweaks. This is AI-built work: order and the "done when" check
+matter more than dates. The targets are flexible and items land as soon as
+they are ready, often well ahead of them. Fixed outside dates still hold, such
+as the 2026-11-13 gate.
+
+| # | Item | What every user gets | Done when | Target (flexible) |
+|---|---|---|---|---|
+| 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | In progress; ~Oct 10 |
+| 2 | Ticket timing | Per ticket: time on the spec, waiting for approval, build to PR, review to merge; shown in the retro PR body and the weekly summary | The fleet review reads where time goes without digging | ~Oct 10 |
+| 3 | Cap advice | The report compares the per-run cap with the repo's real build costs and suggests a cap that lets more builds run at once under the same daily limit. The owner changes it; the factory never writes `factory.yaml` | The suggestion appears in the report, with the numbers behind it | ~Oct 17 |
+| 4 | Autonomy level 2 | Config lets the factory approve its own specs for low-risk labels (tests, docs) once the repo's record qualifies (merged unchanged, no escapes). Off by default | Live on one repo with a qualifying record | ~Oct 31 |
+| 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Now |
+
+What the live runs showed: a ticket's machine time is about 6.5 minutes (spec
+about 2, build to PR about 4.5), and most of the elapsed time is waiting for
+approval and review. The daily-cap check reserves the full per-run cap for
+every build in flight, so a cap far above real build costs limits how many
+builds can run at once.
+
+## Fleet review (weekly on Fridays, or after every 20 real tickets)
+
+Look across every connected repo from the same six angles:
+
+- **Speed:** ticket timing, where the time goes.
+- **Cost:** per ticket, and caps against real spend.
+- **Quality:** merged unchanged, repeat rate, escapes.
+- **Safety:** guard hits, refused patches, blocked or failed jobs.
+- **Setup effort:** time and hand edits needed to connect a repo.
+- **Privacy:** nothing private in public places.
+
+The output is generic backlog items only, added to the table above. Repo
+names and per-repo numbers stay in the private review notes, never in this
+file.
+
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
