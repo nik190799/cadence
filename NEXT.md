@@ -156,6 +156,8 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - Rulesets for `cadence/state` and `cadence/retro`: GitHub refuses them on a private repo without GitHub Pro (HTTP 403). Not set.
 - Code-of-conduct contact (the maintainer's email) committed on `chore/directory-prep` (`4a1a9bd`, local, ships with the release).
 
+**2026-10-03 (UTC), retry grant path, second try:** issue #11 asked for a parser whose test reads `test/fixtures/settlement.log`, a name the sandbox's `.gitignore` (`*.log`) keeps out of the patch. The intake flagged it in the spec; the agent added a one-file `.gitignore` exception, the fixture travelled in the patch, and the first attempt passed (PR #12, `cadence/verify` green, $0.61). So the retry was not needed. `lessons_cited` worked live: the observation records `['L-f356387a']`, absent from the attempt. **Finding:** with this intake, the natural first-attempt gate failures we can stage get caught at spec time; the retry's grant path (agent-retry, verify-retry, `.retry1` booking) stays unproven live. Options: wait for a natural failure, or add an eval-sandbox-only fault-injection switch that fails the first gate once (needs a product decision).
+
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
