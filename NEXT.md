@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-02 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built and smoke-tested live; the DoD retry, the retro fallback and SHA pins built, not yet run live.
+**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built and smoke-tested live; the DoD retry, the retro fallback and SHA pins built, not yet run live; on `factory-1e`, a green run on a failed gate and the learn chain in build runs, not yet run live.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -157,6 +157,11 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - Code-of-conduct contact (the maintainer's email) committed on `chore/directory-prep` (`4a1a9bd`, local, ships with the release).
 
 **2026-10-03 (UTC), retry grant path, second try:** issue #11 asked for a parser whose test reads `test/fixtures/settlement.log`, a name the sandbox's `.gitignore` (`*.log`) keeps out of the patch. The intake flagged it in the spec; the agent added a one-file `.gitignore` exception, the fixture travelled in the patch, and the first attempt passed (PR #12, `cadence/verify` green, $0.61). So the retry was not needed. `lessons_cited` worked live: the observation records `['L-f356387a']`, absent from the attempt. **Finding:** with this intake, the natural first-attempt gate failures we can stage get caught at spec time; the retry's grant path (agent-retry, verify-retry, `.retry1` booking) stays unproven live. Options: wait for a natural failure, or add an eval-sandbox-only fault-injection switch that fails the first gate once (needs a product decision).
+
+**2026-10-02, two live findings in the sandbox; fixed 2026-10-03 on `factory-1e`** (tests and an offline simulation of the job graph; not yet run live):
+- **A failed gate turned the run red.** Run 37018582265: the agent produced an empty diff, `verify`'s apply step exited 1, and the run concluded `failure`, so GitHub mailed "Run failed" although the factory had handled it (`dod-failed`, reason on the issue). Fix: `verify` and `verify-retry` stay green whenever the gate reaches a verdict and output `verdict` (pass or fail), an expression in the job's `outputs:` over step outcomes and the `ok` markers of the paths and apply steps, which run before any agent code; the paths and apply steps record a failure and exit 0; only the `verify.sh` step has `continue-on-error`. `retry-gate`, `publish`, `ledger` (`dod`) and `observe` read result and verdict together: a red `verify` job still means "verify did not finish", and the run stays red when the factory breaks. `observe` maps the verdict back to the job-result words `signals.py` always read, so `signals.py` (the detector version) is unchanged. `publish` gains the fixed word `config`.
+- **Learning lagged by hours.** GitHub ran the hourly schedule only at 09:44, 16:16, 20:47 and 00:29 UTC. Fix: a build run runs the learn chain itself once `ledger` has booked the attempt, whatever the verdict, as a `stage=learn` dispatch would. Only a human-started build that passed route and the gate gets there; spec runs, label events and plain comments never do; no trigger or dispatch added. `harvest` needs `route`, `ledger` and `reconcile` and uses `!cancelled()` (a cancelled run no longer starts learning); classify's spend is booked as `<run>.learn` so it never collides with the build's own record. Cost: the build run, and the issue's queue, stay open until the chain is done.
+- **Next:** install `factory-1e` in the sandbox and see both live: a staged gate failure that ends green with `dod-failed`, and a build whose run ends with harvest, learn-record and retro-plan.
 
 ## Kill criteria (2026-11-13)
 

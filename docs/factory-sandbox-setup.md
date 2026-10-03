@@ -154,6 +154,14 @@ for s in retro observation classify lessons retro-plan metrics cadence-yaml; do
 done
 ```
 
+Then add the project's runtime setup (for a Node project, `actions/setup-node`
+and `npm ci`) at each "Add your stack's runtime setup here" comment: in
+`agent`, `agent-retry`, `verify`, `verify-retry` and `retro-plan` (which
+checks out under `repo/`). In `verify` and `verify-retry`, give each of those
+steps `if: steps.apply.outputs.ok == 'true'`, so it is skipped once the gate
+has already failed (an empty or rejected patch). A setup step that fails there
+fails the job, which every later job reads as "verify did not finish".
+
 In `.cadence/factory.yaml`, set sandbox-sized caps, for example
 `per_run_usd: 2.00` and `daily_usd: 6.00`, and keep the `learning:` block
 with its defaults: `mode: "on"` (quoted), `classify: false`. The sandbox
@@ -233,13 +241,14 @@ knows yet, and shows the loop learning it from a human and enforcing it.
    /cadence-forbid src/domain -> src/db
    ```
 
-   then close the PR without merging. Within the hour (or at once:
-   **Run workflow**, stage `learn`) the learn chain harvests it. The
+   then close the PR without merging. The next sweep or the next build's
+   learn chain harvests it (or at once: **Run workflow**, stage `learn`). The
    class `import-edge:src/domain->src/db` is now seeded, seen on one
    issue: a note, so no retro PR yet (`promote_after: 2`).
 3. **Issue 2: a check.** A second issue that tempts the same edge (for
    example "invoices: load an invoice by id"). If the agent imports
-   `src/db` from `src/domain` again, the next learn run opens a retro PR
+   `src/db` from `src/domain` again, the learn chain at the end of that
+   build run (or the next learn run) opens a retro PR
    from `cadence/retro` with one check `L-xxxxxxxx`: the rule in
    `.cadence/cadence.yaml`, its lesson in `.cadence/lessons.yaml`, a line
    in `docs/PATTERNS.md`, and the fixture

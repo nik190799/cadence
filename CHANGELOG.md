@@ -58,6 +58,25 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   `cadence.yml.tmpl` declares `permissions: contents: read`.
 - `docs/factory-auth.md`: research on replacing the stored
   `ANTHROPIC_API_KEY` with GitHub Actions OIDC (no workflow change).
+- A failed Definition of Done no longer fails the workflow run (seen live:
+  run 37018582265 went red, and GitHub mailed "Run failed", on an empty
+  diff the factory had already labelled `dod-failed`). `verify` and
+  `verify-retry` end green whenever the gate reaches a verdict and output
+  `verdict` (`pass` or `fail`), computed by an expression from step
+  outcomes and from outputs of the steps that run before any agent code;
+  the paths and apply steps record a failure and exit 0, and only the
+  `verify.sh` step continues on error. `retry-gate`, `publish`, `ledger`
+  and `observe` read the job's result and the verdict together; a red
+  `verify` job still means "verify did not finish", and the run stays red
+  when the factory breaks. The ledger's `dod` for a `verify` job that did
+  not finish is now `unknown` (was `fail`). `publish` reports a config
+  failure as `config`.
+- The learn chain also runs at the end of every build run, once `ledger`
+  has booked the attempt (seen live: GitHub ran the hourly schedule only
+  every few hours, so learning lagged). Never in a spec run or on any
+  other event; no trigger or dispatch added. `harvest` needs `route`,
+  `ledger` and `reconcile` and no longer starts in a cancelled run.
+  `learn-record` books classify's spend under the run id `<run>.learn`.
 - `lessons_cited`, an informational record of spec-time prevention.
   `signals.py observe --spec --spec-sha256` stores the active base lessons
   that the approved spec names. Ids that are not active lessons are dropped,

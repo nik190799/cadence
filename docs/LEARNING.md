@@ -46,11 +46,11 @@ Three rules shape the design:
 | Step | Job | Tokens | Produces |
 |---|---|---|---|
 | Build | `agent` | read; Anthropic key | `change.patch` artifact |
-| Gate | `verify` | read; no secrets | result and log |
+| Gate | `verify` | read; no secrets | the verdict (`pass` or `fail`, a job output that agent code cannot write; the job is green on a failed gate) and the log |
 | Scan | `observe` (new) | read; no secrets | observation and findings, as a job output |
 | Retry, once, if the gate failed at format, lint, boundaries or test | `retry-gate`, `agent-retry`, `verify-retry`, `observe-retry` | read; Anthropic key in `agent-retry` only | a second attempt, observed and booked as `<run>.retry1` |
 | Book | `ledger` | App | `observations/`, `findings/`, `patches/`, `prs/` on `cadence/state` |
-| PR closed | `harvest` (new) | read | human-edit and review findings |
+| Learn: in the same build run once `ledger` succeeded, or in the sweep | `harvest` (new) | read | human-edit and review findings from closed PRs |
 | Label (optional, off by default) | `classify` (new) | read; Anthropic key | enum labels only |
 | Record | `learn-record` (new) | App | harvest records, learn marker, daily metrics |
 | Plan | `retro-plan` (new) | read; no secrets | retro patch, plan, PR body |
@@ -59,14 +59,29 @@ Three rules shape the design:
 
 In build runs, `observe` sits between `verify` and `ledger`, and
 `observe-retry` does the same for the retry. The learn chain
-(`harvest` → `classify` → `learn-record` → `retro-plan` → `retro-publish`) runs
-in two cases:
+(`harvest` → `classify` → `learn-record` → `retro-plan` → `retro-publish` or
+`retro-failed`) runs in three cases, and never otherwise:
 
+- **at the end of a build run**, once `ledger` has booked the attempt,
+  whatever the verdict (added 2026-10-03). A new observation is learned from
+  in the run that made it, so a lesson can reach the retro PR before the
+  next issue is built. GitHub ran the hourly schedule only every few hours
+  in the sandbox (09:44, 16:16, 20:47, 00:29 UTC on 2026-10-02), so waiting
+  for the sweep lagged by hours. The build was started by a human (an
+  `/approve`, or a `stage=build` dispatch by a user with write access) and
+  passed `route` and the gate, so this adds no path for an untrusted event:
+  a spec run, a label event and a plain comment never reach `harvest`. The
+  build run stays in progress, and keeps the issue's queue, until the chain
+  is done; a cancelled run starts no learning;
 - in the hourly sweep, when `signals.py due` reports new observations or
-  closed PRs that have not been harvested;
-- on `workflow_dispatch` with `stage=learn`.
+  closed PRs that have not been harvested (a PR closed after its build is
+  harvested here, or by the next build's chain);
+- on `workflow_dispatch` with `stage=learn`, on the default branch.
 
-No trigger type is added.
+No trigger type is added, and nothing dispatches a run: the chain runs
+inside the run that reached it. `harvest` waits in the gate's queue and the
+retro jobs in their one serialized queue (`queue: max`, never cancelled),
+whichever run they belong to.
 
 ## Data model
 
@@ -176,7 +191,7 @@ file is created once and never changed.
 
 | Path | Holds | Written by |
 |---|---|---|
-| `runs/<run>-<attempt>.json` | ledger record, plus `stage`, `pr`, `published_sha`, `base_sha` | `ledger`, `learn-record` |
+| `runs/<run>-<attempt>.json` | ledger record, plus `stage`, `pr`, `published_sha`, `base_sha` | `ledger`, `learn-record` (classify's spend, under the run id `<run>.learn`) |
 | `observations/<run>-<attempt>.json` | the observation | `ledger` |
 | `findings/<run>-<attempt>.jsonl` | 0 to 25 findings; the file's existence means "scanned" | `ledger` |
 | `patches/<run>-<attempt>.patch` | the agent patch, up to 512 KiB | `ledger` |
@@ -193,6 +208,13 @@ file is created once and never changed.
 A build's retry is booked under the run id `<run>.retry1`
 (`runs/<run>.retry1-<attempt>.json`, and the same stem in `observations/`,
 `findings/` and `patches/`). `prs/` names the attempt that was published.
+`learn-record` books classify's spend under `<run>.learn`
+(`runs/<run>.learn-<attempt>.json`): when the chain runs in a build run,
+`runs/<run>-<attempt>.json` is the build's own record. A record's `dod` is
+the verdict of a `verify` job that finished (`pass`, `fail`), `unknown`
+when it did not, and `skipped` when it never ran. An observation's
+`verify_result` keeps its words: `success` for pass, `failure` for fail or
+a `verify` job that failed, `cancelled`, `skipped`.
 
 Counts are never stored. The ladder and the metrics recompute them from
 these files, so concurrent writers cannot conflict.
@@ -664,7 +686,7 @@ for this.
 
 | Threat | Control |
 |---|---|
-| Agent code in `verify` writes to `GITHUB_OUTPUT`, `GITHUB_ENV` and the log | `failed_step` and the log are tier B. `publish` maps `failed_step` to a fixed enum before posting it. `observe` recomputes guarded paths and rule hits from the patch |
+| Agent code in `verify` writes to `GITHUB_OUTPUT`, `GITHUB_ENV` and the log | The verdict is a job output computed by an expression from step outcomes (set by the runner from exit codes) and from the `ok` markers of the paths and apply steps, which run before any agent code; never from an output of the `verify.sh` step or of a later step, whose `GITHUB_OUTPUT` file a leftover process could append to. `failed_step` and the log are tier B. `retry-gate` and `publish` map `failed_step` to a fixed enum before using or posting it. `observe` recomputes guarded paths and rule hits from the patch |
 | A leftover agent process replaces an artifact | `observe` passes its result as a job output. `ledger` stores the patch only if its sha256 matches. `observe` reads the approved spec only if its sha256 equals `gate`'s `spec_sha256` job output; otherwise `lessons_cited` is `null` |
 | A spec that names lesson ids to inflate `lessons_cited` | Only exact `L-` tokens that are active lessons in the base commit's `lessons.yaml` count, so a spec cannot invent one. The field is informational: no rate, catch or kill criterion reads it, so citing more lessons moves no gate number |
 | Hostile files in the scanned tree | `observe` runs base code (`python -I`, base config). It reads only regular files in the patch, up to 1 MB each, skips symlinks, and never executes anything in `work/` |
@@ -675,6 +697,7 @@ for this.
 | The model step | `classify` holds contents read and the Anthropic key only. Its tools are Read, Glob, Grep and Skill, plus Edit of one output directory; no shell, web or MCP. Turns and dollars are capped, and it has its own ledger pool. Its output is checked for known ids, enums, vocabulary and real lines |
 | Auto-merge | Three switches, set in three different places, plus `--match-head-commit` |
 | Triggers | Unchanged: `issues`, `issue_comment`, `workflow_dispatch`, `schedule`. PR heads are fetched as objects; jobs run only `git diff`, `git log` and `git show` on them |
+| The learn chain in a build run | It starts only when `route` said `build` and `ledger` succeeded, so only in a run a human with write access started and the gate passed; never in a spec run, on a label event or on a plain comment. No trigger or dispatch is added. The jobs are the same as in the sweep, with the same tokens and queues; classify's spend is booked under `<run>.learn` and counted in flight like any learn run's |
 | The state branch | Only the App writes it, and files are create-only. Paths and sizes are checked. No job that runs code checks it out. Recommended: a ruleset that limits `cadence/state` and `cadence/retro` to the App |
 | Spend | Learn caps sit inside the global daily cap. The gate counts a running `classify` as in flight, and a build whose retry was granted as two |
 | The DoD retry | It runs inside the run a human approved: no job dispatches a run, and `route.py` lets the App dispatch `spec` only. Only `format`, `lint`, `boundaries` and `test` failures are retried, once. `retry-gate` holds no secrets, waits in the gate's queue and checks two `per_run_usd` for the run against the daily cap before it grants. The failed step reaches the agent as a fixed word; the verify log as a cleaned, size-limited, credential-redacted file marked untrusted. `agent-retry` applies the first patch with git only, last before the agent, and leaves out `.claude/` and `.mcp.json`, which Claude Code loads as configuration |
@@ -702,7 +725,7 @@ for this.
 | `plugins/cadence/skills/cadence-findings/SKILL.md` | new: read-only classifier |
 | `plugins/cadence/skills/cadence-retro/SKILL.md` | factory mode |
 | `plugins/cadence/skills/cadence-intake/SKILL.md` | reads `lessons.yaml` |
-| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; `gate` outputs the approved spec's `spec_sha256`, and `observe` and `observe-retry` read that spec from `cadence-input`; every action pinned to a SHA |
+| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; `gate` outputs the approved spec's `spec_sha256`, and `observe` and `observe-retry` read that spec from `cadence-input`; `verify` and `verify-retry` output the gate's `verdict` and stay green on a failed gate; the learn chain also runs at the end of a build run; every action pinned to a SHA |
 | `plugins/cadence/templates/factory.yaml.tmpl` | `learning:` and `retry:` blocks |
 | `plugins/cadence/templates/docs/PATTERNS.md.tmpl` | learned section |
 
@@ -726,8 +749,10 @@ for this.
 - **Flaky tests.** There is no flake detection beyond requiring `verify.sh`
   to pass on `main`.
 - **Cost and size.** The state branch grows by up to 512 KiB per attempt;
-  warn at 200 MB. A learn chain costs about 4 runner minutes each time it is
-  due.
+  warn at 200 MB. A learn chain costs about 4 runner minutes each time it
+  runs: after every build, and in the sweep when something is due. It also
+  keeps the build run (and the issue's queue) open that long; a retro plan
+  that runs `verify.sh` can take longer.
 - **Classify retries.** Items skipped because of the budget are not retried
   in v1.
 - **Verify failures are not attributed.** When `verify.sh` fails on a retro
