@@ -176,6 +176,26 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - Docs: the key check in [docs/FACTORY.md](docs/FACTORY.md); how to check a secret by its length in [docs/factory-sandbox-setup.md](docs/factory-sandbox-setup.md).
 - **Next (owner):** set the product repo's key from your own terminal (`gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>`, paste at the prompt), install `factory-1g` there, and check the next model run prints a length of about 100. Today's three $2 records stay on `cadence/state` (records are never changed), so the day's budget recovers at 00:00 UTC.
 
+## Priority to the Nov 13 gate (updated 2026-10-03)
+
+The phase-1 plan has five steps to the 2026-11-13 kill-or-continue call. The
+build steps landed early: the pipeline, intake and approval, caps and ledger,
+the reconciler, the learning loop, and a retro PR carrying a self-tested check
+are all live, and real-product tickets started ahead of plan. The proving
+steps have not started, so they come first now. Targets are flexible, since
+AI-built work lands early; Nov 13 is fixed.
+
+| # | Priority | Plan step | Done when | Target (flexible) |
+|---|---|---|---|---|
+| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Start now |
+| 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
+| 3 | Outside proof: replay 10–20 closed issues from one outside public repo, and reach 3 outside repos with a committed `.cadence/cadence.yaml` (needs backlog item 1) | Weeks 4–5 | Replay results recorded; 3 outside repos | ~Nov 6 |
+| 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6 |
+| 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Soon |
+
+Product changes that feed none of these wait until after the gate (see the
+backlog below).
+
 ## Product backlog: generic fixes for every factory user (added 2026-10-03)
 
 Findings from real repos become product changes that help every factory user,
@@ -184,13 +204,23 @@ matter more than dates. The targets are flexible and items land as soon as
 they are ready, often well ahead of them. Fixed outside dates still hold, such
 as the 2026-11-13 gate.
 
+**Now** (needed for the gate, or for safety):
+
 | # | Item | What every user gets | Done when | Target (flexible) |
 |---|---|---|---|---|
 | 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | In progress; ~Oct 10 |
-| 2 | Ticket timing | Per ticket: time on the spec, waiting for approval, build to PR, review to merge; shown in the retro PR body and the weekly summary | The fleet review reads where time goes without digging | ~Oct 10 |
-| 3 | Cap advice | The report compares the per-run cap with the repo's real build costs and suggests a cap that lets more builds run at once under the same daily limit. The owner changes it; the factory never writes `factory.yaml` | The suggestion appears in the report, with the numbers behind it | ~Oct 17 |
-| 4 | Autonomy level 2 | Config lets the factory approve its own specs for low-risk labels (tests, docs) once the repo's record qualifies (merged unchanged, no escapes). Off by default | Live on one repo with a qualifying record | ~Oct 31 |
 | 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Now |
+
+**After Nov 13** (parked: useful, but outside phase 1):
+
+| # | Item | What every user gets |
+|---|---|---|
+| 2 | Ticket timing | Per ticket: time on the spec, waiting for approval, build to PR, review to merge; shown in the retro PR body and the weekly summary |
+| 3 | Cap advice | The report compares the per-run cap with the repo's real build costs and suggests a cap that lets more builds run at once under the same daily limit. The owner changes it; the factory never writes `factory.yaml` |
+| 4 | Autonomy level 2 | Config lets the factory approve its own specs for low-risk labels (tests, docs) once the repo's record qualifies (merged unchanged, no escapes). Off by default |
+| 6 | Status issue per repo | A pinned "Factory status" issue, updated by every run and the hourly sweep: runs in progress, recent tickets with timing and cost, quality numbers, failures with reasons, learned rules and tuning advice. Per repo and per rule, never per developer |
+| 7 | Fleet page | One private page across all of a user's repos, built by a Cadence command from each repo's ledger |
+| 8 | Hosted portal | Live runs, team and organization views and tamper-evident evidence. Needs a server, so it waits for the hosted phase and its gates |
 
 What the live runs showed: a ticket's machine time is about 6.5 minutes (spec
 about 2, build to PR about 4.5), and most of the elapsed time is waiting for
