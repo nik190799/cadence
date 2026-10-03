@@ -61,6 +61,9 @@ corresponding path in the user's repo:
 - `templates/.github/workflows/cadence.yml.tmpl` → `.github/workflows/cadence.yml`
 - `templates/CLAUDE.md.tmpl` → append to existing `CLAUDE.md` (or
   create new); preserve any user content above the Cadence section.
+- `.gitattributes` → append `*.sh text eol=lf` if missing. With
+  `core.autocrlf=true` (the Git for Windows default) a CRLF
+  `scripts/verify.sh` fails in bash with `$'': command not found`.
 - `.gitignore` → append these lines if missing, under a `# Cadence verify
   evidence` comment. `scripts/verify.{sh,ps1}` write them on every run,
   and a committed `.last_verify_ok` would claim a pass that never ran on

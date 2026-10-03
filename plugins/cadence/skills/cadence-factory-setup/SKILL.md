@@ -182,6 +182,23 @@ python:
   editable: ["."]
 ```
 
+- **Pin the toolchain to the version the code passes on today** (the one in
+  CI, or the developer's local version when CI says "latest"). A gate on
+  "latest stable" can start failing on a release day with no code change.
+  A Flutter app, for example, as custom steps:
+
+  ```yaml
+  custom:
+    - name: Set up Flutter
+      uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+      tag: v2
+      with: {flutter-version: 3.32.4, channel: stable, cache: true}
+      slots: [agent, agent-retry, verify, verify-retry, retro-plan]
+    - name: Get Dart packages
+      run: flutter pub get
+      slots: [agent, agent-retry, verify, verify-retry, retro-plan]
+  ```
+
 - Versions are quoted strings (`"3.10"`, never `3.10`, which YAML reads as
   3.1).
 - `node.package_manager` is `npm` (default), `pnpm` or `yarn` (through
@@ -296,7 +313,19 @@ configured" although `cadence.yaml` has some means `verify.sh` could not
 read the config (on Windows, a `python3` that is the Microsoft Store stub
 does this): fix the interpreter and run it again. If a command fails because of the environment, fix the
 command; if the code fails its own checks, stop and tell the user, since
-every ticket would fail the gate. `verify.sh` writes its evidence under
+every ticket would fail the gate.
+
+The common case is a format check that fails on most files, usually because
+the formatter's style changed between versions. Do not reformat the
+project inside the setup PR. Offer the user two ways, and say which you
+chose in the PR body:
+
+- leave the format command out (`format: []`, with a comment giving the
+  exact command) and add it back after a one-time formatting commit;
+- or pin the toolchain to the version the code was formatted with (Step 4).
+
+Lint and test failures are different: they mean the code is broken today.
+Stop and tell the user. `verify.sh` writes its evidence under
 `.cadence/`; those files are git-ignored (Step 3).
 
 ## Step 9: The GitHub App (the user does this, in the browser)
