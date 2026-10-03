@@ -45,12 +45,29 @@ The one automatic retry on a failed Definition of Done gate adds:
   checks, and a plan that still fails is recorded by retro-failed (git and
   jq only)
 
+The gate's verdict (live, run 37018582265, 2026-10-02: an empty diff turned
+the whole run red, and GitHub mailed "Run failed" for a handled outcome):
+
+- verify and verify-retry end green whenever the gate reaches a verdict,
+  and output it as `verdict`, an expression over step outcomes and the ok
+  markers of the steps that run before any agent code: nothing the step
+  that runs scripts/verify.sh (or a later step) writes can produce it
+- only that step continues on error; paths and apply record a failure as
+  an output and exit 0, and every later step runs only on their markers
+- a red verify job still means "verify did not finish" to every consumer,
+  and the run stays red when the factory itself breaks
+
+The learn chain also runs in a build run once ledger has booked it (the
+hourly schedule fires only every few hours), and still never in a spec run
+or on any other event.
+
 And every `uses:` in both workflow templates is pinned to a commit SHA.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -216,14 +233,34 @@ def test_route_skips_learn_dispatches() -> None:
     assert "inputs.stage != 'reconcile'" in JOBS["route"]["if"]
 
 
-def test_learn_chain_never_runs_on_issue_events() -> None:
-    cond = JOBS["harvest"]["if"]
-    assert "github.event_name == 'schedule'" in cond
-    assert "needs.reconcile.outputs.learn_due == 'true'" in cond
-    assert "inputs.stage == 'learn'" in cond
-    assert "github.event.repository.default_branch" in cond
+HARVEST_IF = (
+    "!cancelled() && "
+    "((github.event_name == 'schedule' && needs.reconcile.outputs.learn_due == 'true') || "
+    "(github.event_name == 'workflow_dispatch' && inputs.stage == 'learn' && "
+    "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || "
+    "(needs.route.outputs.stage == 'build' && needs.ledger.result == 'success'))"
+)
+
+
+def test_learn_chain_runs_only_when_due_on_a_learn_dispatch_or_after_a_booked_build() -> None:
+    """The invariant, exactly: the learn chain starts (harvest) on the hourly
+    schedule when reconcile says it is due, on a default-branch dispatch with
+    stage=learn, or in a build run after ledger succeeded; never in a spec
+    run and never on any other event (a label event or a plain comment never
+    gets a `build` from route.py). Every later learn job needs harvest. The
+    simulated runs below check the same thing event by event."""
+    cond = " ".join(JOBS["harvest"]["if"].split()).replace("( ", "(")
+    assert cond == HARVEST_IF
+    assert JOBS["harvest"]["needs"] == ["route", "ledger", "reconcile"]
+    # Nothing names an issue event: a build is recognised by route's stage,
+    # which only an /approve or a stage=build dispatch from a user with
+    # write access yields, and only once ledger has booked it.
     assert "'issues'" not in cond and "'issue_comment'" not in cond
-    assert JOBS["harvest"]["needs"] == ["reconcile"]
+    assert "always()" not in cond  # a cancelled run never starts learning
+    assert JOBS["ledger"]["if"].split()[0] == "always()"
+    assert "needs.route.outputs.stage == 'build' && needs.gate.outputs.proceed == 'true'" in (
+        " ".join(JOBS["ledger"]["if"].split())
+    )
     assert JOBS["classify"]["needs"] == ["harvest"]
     assert JOBS["learn-record"]["needs"] == ["harvest", "classify"]
     assert JOBS["retro-plan"]["needs"] == ["learn-record"]
@@ -387,6 +424,9 @@ def test_harvest_waits_in_the_gate_queue() -> None:
     conc = JOBS["harvest"]["concurrency"]
     assert conc["group"] == "cadence-factory-gate"
     assert conc["cancel-in-progress"] is False
+    # Now also after builds, so it often queues behind a gate: never cancel
+    # a pending job in that group, and never be cancelled.
+    assert conc.get("queue") == "max"
 
 
 def test_gate_harvest_and_retry_gate_count_runs_in_flight_the_same_way() -> None:
@@ -505,7 +545,8 @@ def test_publish_posts_only_a_fixed_failed_step_word() -> None:
     assert '"${FAILED_STEP' not in report
     words = set(re.findall(r'\) step="?([a-z]+)"? ;;', report))
     assert words == {
-        "empty", "apply", "policy", "format", "lint", "boundaries", "test", "timeout", "unknown",
+        "empty", "apply", "policy", "config", "format", "lint", "boundaries", "test", "timeout",
+        "unknown",
     }
 
 
@@ -752,7 +793,9 @@ def test_a_retry_needs_the_approved_build_and_a_failed_gate() -> None:
         "needs.gate.outputs.proceed == 'true'",
         "needs.route.outputs.retry_on_dod_fail == '1'",
         "needs.agent.result == 'success'",
-        "needs.verify.result == 'failure'",
+        # verify finished (green) with the verdict fail; a red verify job did
+        # not finish and is never retried.
+        "needs.verify.result == 'success' && needs.verify.outputs.verdict == 'fail'",
     ):
         assert part in cond, part
     assert JOBS["retry-gate"]["needs"] == ["route", "gate", "agent", "verify"]
@@ -772,12 +815,19 @@ def test_the_retry_is_bounded_to_one_more_model_run() -> None:
         name for name, job in JOBS.items() if "anthropics/claude-code-action" in _dump(job)
     }
     assert model_jobs == {"intake", "agent", "agent-retry", "classify"}
-    # Nothing downstream of the retry can run the model again.
+    # Nothing downstream of the retry can run the build model again.
     for name, job in JOBS.items():
         needs = job.get("needs", [])
         needs = [needs] if isinstance(needs, str) else needs
         if "agent-retry" in needs:
             assert name in {"verify-retry", "observe-retry", "publish", "ledger", "release"}, name
+    # Since the learn chain runs in build runs, classify is downstream too
+    # (through ledger and harvest). It is the learn chain's labeler: its own
+    # pool, checked by harvest in the gate's queue, never the build agent.
+    downstream = {name for name in JOBS if "agent-retry" in _ancestors(name)}
+    assert downstream & model_jobs == {"classify"}
+    assert JOBS["classify"]["needs"] == ["harvest"]
+    assert "check --pool learn" in _step(JOBS["harvest"], "Check the learn budget")["run"]
     # The same per-run caps as the first attempt.
     first = _uses(JOBS["agent"], "anthropics/claude-code-action")["with"]["claude_args"]
     retry = _uses(JOBS["agent-retry"], "anthropics/claude-code-action")["with"]["claude_args"]
@@ -966,7 +1016,8 @@ def test_observe_retry_observes_like_observe() -> None:
     assert observe["env"]["TRY_RUN_ID"] == "${{ github.run_id }}"
     assert retry["env"]["TRY_RUN_ID"] == "${{ github.run_id }}.retry1"
     assert retry["env"]["AGENT_RESULT"] == "${{ needs.agent-retry.result }}"
-    assert retry["env"]["VERIFY_RESULT"] == "${{ needs.verify-retry.result }}"
+    assert retry["env"]["VERIFY_RESULT"] == OBSERVED_GATE % (("verify-retry",) * 3)
+    assert observe["env"]["VERIFY_RESULT"] == OBSERVED_GATE % (("verify",) * 3)
     assert len(observe["steps"]) == len(retry["steps"])
     for a, b in zip(observe["steps"], retry["steps"]):
         assert _dump(a) == _swap_artifacts(_dump(b))
@@ -1084,7 +1135,8 @@ T1, T2 = "1" * 40, "2" * 40
 
 def _pick(tmp_path: Path, **env: str) -> dict[str, str]:
     base = {
-        "GITHUB_RUN_ID": "42", "VERIFY_RESULT": "", "RETRY_VERIFY_RESULT": "",
+        "GITHUB_RUN_ID": "42", "VERIFY_RESULT": "", "VERIFY_VERDICT": "",
+        "RETRY_VERIFY_RESULT": "", "RETRY_VERIFY_VERDICT": "",
         "TREE_1": "", "TREE_2": "", "GUARDED_1": "", "GUARDED_2": "",
         "FAILED_1": "", "FAILED_2": "",
     }
@@ -1095,11 +1147,21 @@ def _pick(tmp_path: Path, **env: str) -> dict[str, str]:
     return {key: values[0] for key, values in out.items()}
 
 
+def test_pick_reads_each_attempt_as_its_job_result_and_its_verdict() -> None:
+    env = _step(JOBS["publish"], PICK)["env"]
+    for var, job, field in (
+        ("VERIFY_RESULT", "verify", "result"), ("VERIFY_VERDICT", "verify", "outputs.verdict"),
+        ("RETRY_VERIFY_RESULT", "verify-retry", "result"),
+        ("RETRY_VERIFY_VERDICT", "verify-retry", "outputs.verdict"),
+    ):
+        assert env[var] == "${{ needs.%s.%s }}" % (job, field), var
+
+
 @needs_shell
 def test_pick_takes_the_first_attempt_when_it_passed(tmp_path: Path) -> None:
     out = _pick(
-        tmp_path, VERIFY_RESULT="success", TREE_1=T1, GUARDED_1="tests/", TREE_2=T2,
-        RETRY_VERIFY_RESULT="skipped",
+        tmp_path, VERIFY_RESULT="success", VERIFY_VERDICT="pass", TREE_1=T1, GUARDED_1="tests/",
+        TREE_2=T2, RETRY_VERIFY_RESULT="skipped",
     )
     assert out == {
         "passed": "true", "try": "1", "tree": T1, "guarded": "tests/",
@@ -1110,8 +1172,8 @@ def test_pick_takes_the_first_attempt_when_it_passed(tmp_path: Path) -> None:
 @needs_shell
 def test_pick_takes_the_retry_when_only_the_retry_passed(tmp_path: Path) -> None:
     out = _pick(
-        tmp_path, VERIFY_RESULT="failure", RETRY_VERIFY_RESULT="success", TREE_1=T1, TREE_2=T2,
-        FAILED_1="FAIL: lint (exit 1)",
+        tmp_path, VERIFY_RESULT="success", VERIFY_VERDICT="fail", RETRY_VERIFY_RESULT="success",
+        RETRY_VERIFY_VERDICT="pass", TREE_1=T1, TREE_2=T2, FAILED_1="FAIL: lint (exit 1)",
     )
     assert out["passed"] == "true" and out["try"] == "2" and out["tree"] == T2
     assert out["patch_artifact"] == "change-retry-42"
@@ -1120,22 +1182,46 @@ def test_pick_takes_the_retry_when_only_the_retry_passed(tmp_path: Path) -> None
 
 @needs_shell
 @pytest.mark.parametrize(
-    ("retry_result", "failed", "log"),
+    ("retry_result", "retry_verdict", "failed", "log"),
     [
-        ("failure", "FAIL: test (exit 1)", "verify-log-retry-42"),
-        ("cancelled", "FAIL: test (exit 1)", "verify-log-retry-42"),
-        ("skipped", "FAIL: lint (exit 1)", "verify-log-42"),
-        ("", "FAIL: lint (exit 1)", "verify-log-42"),
+        ("success", "fail", "FAIL: test (exit 1)", "verify-log-retry-42"),
+        # The retry's verify did not finish: no failed step, so the report
+        # says "verify did not finish", whatever the red job's verdict says.
+        ("cancelled", "", "", "verify-log-retry-42"),
+        ("failure", "fail", "", "verify-log-retry-42"),
+        ("failure", "pass", "", "verify-log-retry-42"),
+        ("skipped", "", "FAIL: lint (exit 1)", "verify-log-42"),
+        ("", "", "FAIL: lint (exit 1)", "verify-log-42"),
     ],
 )
 def test_pick_reports_the_last_failure_when_nothing_passed(
-    tmp_path: Path, retry_result: str, failed: str, log: str
+    tmp_path: Path, retry_result: str, retry_verdict: str, failed: str, log: str
 ) -> None:
     out = _pick(
-        tmp_path, VERIFY_RESULT="failure", RETRY_VERIFY_RESULT=retry_result,
+        tmp_path, VERIFY_RESULT="success", VERIFY_VERDICT="fail",
+        RETRY_VERIFY_RESULT=retry_result, RETRY_VERIFY_VERDICT=retry_verdict,
         FAILED_1="FAIL: lint (exit 1)", FAILED_2="FAIL: test (exit 1)", TREE_1=T1, TREE_2=T2,
     )
     assert out == {"passed": "false", "log_artifact": log, "failed_step": failed}
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("result", "verdict"),
+    [("failure", ""), ("failure", "pass"), ("cancelled", "pass"), ("success", ""),
+     ("success", "PASS "), ("success", "passed")],
+)
+def test_pick_never_publishes_a_verify_job_that_did_not_finish(
+    tmp_path: Path, result: str, verdict: str
+) -> None:
+    """A red verify job did not finish, even with the verdict pass (an upload
+    that failed after verify.sh passed): never published, and its failed
+    step is not reported, so the report says verify did not finish."""
+    out = _pick(
+        tmp_path, VERIFY_RESULT=result, VERIFY_VERDICT=verdict, TREE_1=T1,
+        FAILED_1="FAIL: test (exit 1)", RETRY_VERIFY_RESULT="skipped",
+    )
+    assert out == {"passed": "false", "log_artifact": "verify-log-42", "failed_step": ""}
 
 
 @needs_shell
@@ -1143,7 +1229,10 @@ def test_pick_cannot_be_steered_by_a_forged_failed_step(tmp_path: Path) -> None:
     """failed_step can come from agent code in verify. A newline in it must
     not add outputs (passed=true would publish a failing patch)."""
     forged = "FAIL: lint (exit 1)\npassed=true\ntry=1\ntree=" + T1 + "\npatch_artifact=change-42"
-    out = _pick(tmp_path, VERIFY_RESULT="failure", RETRY_VERIFY_RESULT="skipped", FAILED_1=forged)
+    out = _pick(
+        tmp_path, VERIFY_RESULT="success", VERIFY_VERDICT="fail", RETRY_VERIFY_RESULT="skipped",
+        FAILED_1=forged,
+    )
     assert out["passed"] == "false"
     assert set(out) == {"passed", "log_artifact", "failed_step"}
     assert "\n" not in out["failed_step"]
@@ -1152,7 +1241,10 @@ def test_pick_cannot_be_steered_by_a_forged_failed_step(tmp_path: Path) -> None:
 
 @needs_shell
 def test_pick_drops_a_tree_that_is_not_one(tmp_path: Path) -> None:
-    out = _pick(tmp_path, VERIFY_RESULT="success", TREE_1="not-a-tree", GUARDED_1="tool/ `x`")
+    out = _pick(
+        tmp_path, VERIFY_RESULT="success", VERIFY_VERDICT="pass", TREE_1="not-a-tree",
+        GUARDED_1="tool/ `x`",
+    )
     assert out["passed"] == "true" and out["tree"] == "" and out["guarded"] == "tool/ x"
 
 
@@ -1183,9 +1275,11 @@ def _report(tmp_path: Path, **env: str) -> str:
 
 def test_the_report_runs_only_when_no_attempt_passed() -> None:
     step = _step(JOBS["publish"], REPORT)
-    assert step["if"].startswith("steps.pick.outputs.passed == 'false' && ")
+    # Whenever verify ran: it gave the verdict fail, or it did not finish.
+    assert step["if"] == "steps.pick.outputs.passed == 'false' && needs.verify.result != 'skipped'"
     assert step["env"]["FAILED_STEP"] == (
-        "${{ steps.pick.outputs.failed_step || 'verify did not finish (timeout or cancelled)' }}"
+        "${{ steps.pick.outputs.failed_step || "
+        "'verify did not finish (failed, timed out or cancelled)' }}"
     )
     assert step["env"]["AGENT_RETRY_RESULT"] == "${{ needs.agent-retry.result }}"
     assert step["env"]["RETRY_WHY"] == "${{ needs.retry-gate.outputs.why }}"
@@ -1211,9 +1305,12 @@ def test_the_report_runs_only_when_no_attempt_passed() -> None:
         ({"FAILED_STEP": "FAIL: format (exit 1)", "AGENT_RETRY_RESULT": "skipped",
           "RETRY_GATE_RESULT": "skipped"},
          "format", "not retried: retry is off"),
-        ({"FAILED_STEP": "verify did not finish (timeout or cancelled)",
+        ({"FAILED_STEP": "verify did not finish (failed, timed out or cancelled)",
           "AGENT_RETRY_RESULT": "skipped", "RETRY_GATE_RESULT": "skipped"},
          "timeout", "not retried: timeout failures are not retried"),
+        ({"FAILED_STEP": "config: no guarded paths", "AGENT_RETRY_RESULT": "skipped",
+          "RETRY_GATE_RESULT": "success", "RETRY_WHY": "not-retryable"},
+         "config", "not retried: config failures are not retried"),
         ({"FAILED_STEP": "FAIL: boundaries (exit 1)", "AGENT_RETRY_RESULT": "skipped",
           "RETRY_GATE_RESULT": "failure"},
          "boundaries", "not retried: the retry gate did not finish"),
@@ -1252,6 +1349,9 @@ def test_ledger_books_the_retry_under_its_own_run_id() -> None:
     assert job["env"]["PUB_TRY"] == "${{ needs.publish.outputs.published_try }}"
     assert job["env"]["AGENT_RETRY_RESULT"] == "${{ needs.agent-retry.result }}"
     assert job["env"]["VERIFY_RETRY_RESULT"] == "${{ needs.verify-retry.result }}"
+    assert job["env"]["VERIFY_RETRY_VERDICT"] == "${{ needs.verify-retry.outputs.verdict }}"
+    assert job["env"]["VERIFY_RESULT"] == "${{ needs.verify.result }}"
+    assert job["env"]["VERIFY_VERDICT"] == "${{ needs.verify.outputs.verdict }}"
     assert '"$PUB_TRY" == "1"' in _step(job, "Record the run")["run"]
     retry = _step(job, "Record the retry")
     assert retry["id"] == "record_retry"
@@ -1302,8 +1402,9 @@ def _ledger_world(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "RUNNER_TEMP": runner.as_posix(), "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_SHA": "a" * 40, "ISSUE": "7", "STAGE": "build", "INTAKE_RESULT": "skipped",
-        "AGENT_RESULT": "success", "VERIFY_RESULT": "failure",
+        "AGENT_RESULT": "success", "VERIFY_RESULT": "success", "VERIFY_VERDICT": "fail",
         "AGENT_RETRY_RESULT": "success", "VERIFY_RETRY_RESULT": "success",
+        "VERIFY_RETRY_VERDICT": "pass",
         "PR": "9", "PUB": "b" * 40, "PUB_TRY": "2",
     }
     return work, runner, env
@@ -1332,7 +1433,8 @@ def test_ledger_books_no_retry_when_none_ran(tmp_path: Path) -> None:
     work, runner, env = _ledger_world(tmp_path)
     env = {
         **env, "AGENT_RETRY_RESULT": "skipped", "VERIFY_RETRY_RESULT": "skipped",
-        "PUB_TRY": "1", "VERIFY_RESULT": "success",
+        "VERIFY_RETRY_VERDICT": "", "PUB_TRY": "1", "VERIFY_RESULT": "success",
+        "VERIFY_VERDICT": "pass",
     }
     for step in ("Record the run", "Record the retry"):
         proc, _ = _run_script(tmp_path, _step(JOBS["ledger"], step)["run"], env, cwd=work)
@@ -1346,7 +1448,10 @@ def test_ledger_books_no_retry_when_none_ran(tmp_path: Path) -> None:
 def test_a_retry_whose_cost_is_unknown_is_booked_at_the_cap(tmp_path: Path) -> None:
     work, runner, env = _ledger_world(tmp_path)
     (runner / "cadence-result-retry" / "claude-result.json").unlink()
-    env = {**env, "AGENT_RETRY_RESULT": "cancelled", "VERIFY_RETRY_RESULT": "skipped", "PUB_TRY": ""}
+    env = {
+        **env, "AGENT_RETRY_RESULT": "cancelled", "VERIFY_RETRY_RESULT": "skipped",
+        "VERIFY_RETRY_VERDICT": "", "PUB_TRY": "",
+    }
     proc, _ = _run_script(tmp_path, _step(JOBS["ledger"], "Record the retry")["run"], env, cwd=work)
     assert proc.returncode == 0, proc.stderr
     retry = json.loads(
@@ -1355,6 +1460,38 @@ def test_a_retry_whose_cost_is_unknown_is_booked_at_the_cap(tmp_path: Path) -> N
     assert retry["outcome"] == "cancelled" and retry["dod"] == "skipped"
     assert retry["cost_source"] == "cap" and retry["booked_usd"] == 5.0
     assert "pr" not in retry
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("result", "verdict", "dod"),
+    [
+        ("success", "pass", "pass"),
+        ("success", "fail", "fail"),
+        # A red or cancelled verify job did not finish, whatever its verdict.
+        ("failure", "", "unknown"),
+        ("failure", "fail", "unknown"),
+        ("failure", "pass", "unknown"),
+        ("cancelled", "", "unknown"),
+        ("success", "", "unknown"),
+        ("skipped", "", "skipped"),
+    ],
+)
+def test_ledger_books_the_verdict_of_a_finished_gate_only(
+    tmp_path: Path, result: str, verdict: str, dod: str
+) -> None:
+    for step, prefix, record in (
+        ("Record the run", "VERIFY", "42-1.json"),
+        ("Record the retry", "VERIFY_RETRY", "42.retry1-1.json"),
+    ):
+        world = tmp_path / prefix
+        world.mkdir()
+        work, runner, env = _ledger_world(world)
+        env = {**env, f"{prefix}_RESULT": result, f"{prefix}_VERDICT": verdict, "PUB_TRY": ""}
+        proc, _ = _run_script(world, _step(JOBS["ledger"], step)["run"], env, cwd=work)
+        assert proc.returncode == 0, (step, proc.stderr)
+        booked = json.loads((runner / "staged" / "runs" / record).read_text(encoding="utf-8"))
+        assert booked["dod"] == dod, step
 
 
 # ---- retro-plan never fails on verify.sh; retro-failed records the plan ----
@@ -1589,11 +1726,13 @@ def test_the_ci_template_reads_only() -> None:
         assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}
 
 
-# Jobs that must still run when a job upstream of them was skipped: intake in
-# a build, gate/agent/verify in a spec run, reconcile in a stage=learn
-# dispatch, classify whenever labelling is off. Without always() or
-# !cancelled(), GitHub's implicit success() skips the job (retro-publish never
-# ran live until 2026-10-02 for exactly this reason).
+# Jobs that must still run when a job upstream of them was skipped: intake and
+# reconcile in a build run (whose learn chain now runs too), gate/agent/verify
+# in a spec run, reconcile in a stage=learn dispatch, route and ledger in the
+# sweep, classify whenever labelling is off. Without always() or !cancelled(),
+# GitHub's implicit success() skips the job (retro-publish never ran live
+# until 2026-10-02 for exactly this reason). The simulated runs below check
+# the same rule end to end.
 MUST_SURVIVE_SKIPPED_UPSTREAM = (
     "observe", "publish", "ledger", "release",
     "harvest", "classify", "learn-record", "retro-plan", "retro-publish",
@@ -1613,3 +1752,927 @@ def test_job_survives_a_skipped_upstream_job(name: str) -> None:
         assert any(f"needs.{d}.result" in cond for d in direct) or name in (
             "observe", "publish",
         ), f"{name} must check a direct parent's result explicitly"
+
+
+# ---- a model of GitHub's expressions, `if:` and job scheduling ----
+#
+# Only as wide as this template needs: literals, property access, ! == != <
+# <= > >= && || ( ), and the functions the template calls. As on GitHub,
+# strings compare case-insensitively, mixed types compare as numbers (null
+# and '' are 0), && and || return an operand, and an `if:` with no status
+# function means `success() && (...)`, where success() looks at every job
+# upstream, not only the direct needs (retro-publish never ran live until
+# 2026-10-02 because of that).
+
+_EXPR_TOKEN = re.compile(
+    r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<num>\d+(?:\.\d+)?)"
+    r"|(?P<op>==|!=|<=|>=|&&|\|\||[!<>().,\[\]])|(?P<name>[A-Za-z_][A-Za-z0-9_-]*))"
+)
+_STATUS_FN = re.compile(r"\b(always|success|failure|cancelled)\s*\(")
+_TEMPLATE = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+class _Expr:
+    def __init__(self, text: str) -> None:
+        text = text.strip()
+        self.toks: list[tuple[str, str]] = []
+        pos = 0
+        while pos < len(text):
+            m = _EXPR_TOKEN.match(text, pos)
+            assert m and m.end() > pos, f"cannot read {text[pos:]!r}"
+            self.toks.append((m.lastgroup, m.group(m.lastgroup)))
+            pos = m.end()
+        self.i = 0
+        self.tree = self._binary(0)
+        assert self.i == len(self.toks), f"trailing tokens in {text!r}"
+
+    _LEVELS = (("||",), ("&&",), ("==", "!="), ("<", "<=", ">", ">="))
+
+    def _peek(self) -> str | None:
+        return self.toks[self.i][1] if self.i < len(self.toks) else None
+
+    def _take(self, want: str | None = None) -> tuple[str, str]:
+        tok = self.toks[self.i]
+        assert want is None or tok[1] == want, (want, tok)
+        self.i += 1
+        return tok
+
+    def _binary(self, level: int):
+        if level == len(self._LEVELS):
+            return self._unary()
+        node = self._binary(level + 1)
+        while self._peek() in self._LEVELS[level]:
+            op = self._take()[1]
+            node = (op, node, self._binary(level + 1))
+        return node
+
+    def _unary(self):
+        if self._peek() == "!":
+            self._take()
+            return ("!", self._unary())
+        node = self._primary()
+        while self._peek() in (".", "["):
+            if self._take()[1] == ".":
+                node = ("get", node, ("lit", self._take()[1]))
+            else:
+                node = ("get", node, self._binary(0))
+                self._take("]")
+        return node
+
+    def _primary(self):
+        kind, value = self._take()
+        if kind == "str":
+            return ("lit", value[1:-1].replace("''", "'"))
+        if kind == "num":
+            return ("lit", float(value))
+        if value == "(":
+            node = self._binary(0)
+            self._take(")")
+            return node
+        assert kind == "name", value
+        if value in ("true", "false", "null"):
+            return ("lit", {"true": True, "false": False, "null": None}[value])
+        if self._peek() == "(":
+            self._take()
+            args = []
+            while self._peek() != ")":
+                args.append(self._binary(0))
+                if self._peek() == ",":
+                    self._take()
+            self._take(")")
+            return ("call", value.lower(), args)
+        return ("ctx", value)
+
+
+def _num(v) -> float:
+    if v is None:
+        return 0.0
+    if isinstance(v, bool):
+        return float(v)
+    if isinstance(v, float):
+        return v
+    if isinstance(v, str):
+        try:
+            return float(v.strip() or "0")
+        except ValueError:
+            return math.nan
+    return math.nan
+
+
+def _truthy(v) -> bool:
+    if isinstance(v, float):
+        return not (v == 0 or math.isnan(v))
+    return bool(v) if isinstance(v, (bool, str, type(None))) else True
+
+
+def _text(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else str(v)
+    return str(v)
+
+
+def _eq(a, b) -> bool:
+    if isinstance(a, str) and isinstance(b, str):
+        return a.lower() == b.lower()
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a is b
+    if type(a) is type(b):
+        return a == b
+    return _num(a) == _num(b)
+
+
+def _lookup(base, key):
+    if not isinstance(base, dict):
+        return None
+    key = _text(key)
+    if key in base:
+        return base[key]
+    return next((v for k, v in base.items() if k.lower() == key.lower()), None)
+
+
+def _eval(node, ctx):
+    op = node[0]
+    if op == "lit":
+        return node[1]
+    if op == "ctx":
+        return _lookup(ctx, node[1])
+    if op == "get":
+        return _lookup(_eval(node[1], ctx), _eval(node[2], ctx))
+    if op == "!":
+        return not _truthy(_eval(node[1], ctx))
+    if op in ("&&", "||"):
+        left = _eval(node[1], ctx)
+        if _truthy(left) == (op == "&&"):
+            return _eval(node[2], ctx)
+        return left
+    if op in ("==", "!="):
+        same = _eq(_eval(node[1], ctx), _eval(node[2], ctx))
+        return same if op == "==" else not same
+    if op in ("<", "<=", ">", ">="):
+        a, b = _num(_eval(node[1], ctx)), _num(_eval(node[2], ctx))
+        return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+    name, args = node[1], [_eval(a, ctx) for a in node[2]]
+    if name in ("always", "success", "failure", "cancelled"):
+        return True if name == "always" else ctx["__status__"][name]
+    if name == "contains":
+        if isinstance(args[0], list):
+            return any(_eq(x, args[1]) for x in args[0])
+        return _text(args[1]).lower() in _text(args[0]).lower()
+    if name == "format":
+        return re.sub(r"\{(\d+)\}", lambda m: _text(args[1 + int(m.group(1))]), _text(args[0]))
+    raise AssertionError(f"the model does not know {name}()")
+
+
+def _expr_of(text: str) -> str:
+    text = str(text).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2]
+    return text
+
+
+def _if_holds(cond, ctx) -> bool:
+    expr = _expr_of(cond) if cond not in (None, "") else "success()"
+    if not _STATUS_FN.search(expr):
+        expr = f"success() && ({expr})"
+    return _truthy(_eval(_Expr(expr).tree, ctx))
+
+
+def _render(value, ctx) -> str:
+    return _TEMPLATE.sub(lambda m: _text(_eval(_Expr(m.group(1)).tree, ctx)), _text(value))
+
+
+def _needs_of(job: dict) -> list[str]:
+    needs = job.get("needs", [])
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def _ancestors(name: str) -> set[str]:
+    seen: set[str] = set()
+    stack = _needs_of(JOBS[name])
+    while stack:
+        dep = stack.pop()
+        if dep not in seen:
+            seen.add(dep)
+            stack.extend(_needs_of(JOBS[dep]))
+    return seen
+
+
+def _job_order() -> list[str]:
+    order: list[str] = []
+
+    def visit(name: str) -> None:
+        if name not in order:
+            for dep in _needs_of(JOBS[name]):
+                visit(dep)
+            order.append(name)
+
+    for name in JOBS:
+        visit(name)
+    return order
+
+
+GITHUB = {
+    "repository": "owner/repo", "server_url": "https://github.com", "run_id": "42",
+    "run_attempt": "1", "sha": "a" * 40, "token": "ghs_test", "ref": "refs/heads/main",
+}
+
+
+def _event(name: str, *, ref: str = "refs/heads/main", **payload) -> dict:
+    return {
+        **GITHUB, "event_name": name, "ref": ref,
+        "event": {"repository": {"default_branch": "main"}, "sender": {"login": "maintainer"},
+                  **payload},
+    }
+
+
+APPROVE = _event("issue_comment", issue={"number": 7}, comment={"body": "/approve"})
+LABEL = _event("issues", issue={"number": 7}, label={"name": "factory"})
+COMMENT = _event("issue_comment", issue={"number": 7}, comment={"body": "Looks right to me."})
+SCHEDULE = _event("schedule")
+DISPATCH = _event("workflow_dispatch")
+
+
+def _simulate_run(github: dict, jobs: dict | None = None, *, inputs: dict | None = None,
+                  cancel_after: str | None = None) -> dict[str, dict]:
+    """Every job in order, as GitHub would schedule it. ``jobs`` maps a job
+    to (result, outputs) or to a function of its context; a job that runs
+    and is not named succeeds with empty outputs. ``cancel_after``: someone
+    cancels the run once that job has finished."""
+    jobs = jobs or {}
+    done: dict[str, dict] = {}
+    cancelled = False
+    for name in _job_order():
+        job = JOBS[name]
+        upstream = _ancestors(name)
+        ctx = {
+            "github": github, "inputs": inputs or {}, "vars": {"CADENCE_BOT_LOGIN": "app[bot]"},
+            "needs": {dep: done[dep] for dep in _needs_of(job)},
+            "__status__": {
+                "success": not cancelled and all(done[a]["result"] == "success" for a in upstream),
+                "failure": any(done[a]["result"] == "failure" for a in upstream),
+                "cancelled": cancelled,
+            },
+        }
+        declared = {key: "" for key in job.get("outputs", {})}
+        if not _if_holds(job.get("if"), ctx):
+            done[name] = {"result": "skipped", "outputs": declared}
+            continue
+        spec = jobs.get(name, ("success", {}))
+        result, outputs = spec(ctx) if callable(spec) else spec
+        done[name] = {"result": result, "outputs": {**declared, **outputs}}
+        cancelled = cancelled or name == cancel_after
+    return done
+
+
+def _ran(done: dict[str, dict]) -> set[str]:
+    return {name for name, d in done.items() if d["result"] != "skipped"}
+
+
+def _conclusion(done: dict[str, dict]) -> str:
+    results = {d["result"] for d in done.values()}
+    return "failure" if "failure" in results else "cancelled" if "cancelled" in results else "success"
+
+
+def _simulate_steps(job_name: str, ctx: dict, behave) -> tuple[str, dict, list[str]]:
+    """One job's steps: each step's `if:` (implicit success() over the
+    earlier steps), continue-on-error, and the job's outputs evaluated at
+    the end from the steps context, as the runner does. ``behave(step,
+    ctx)`` returns (outcome, outputs) for a step that runs."""
+    job = JOBS[job_name]
+    steps: dict[str, dict] = {}
+    failed, cancelled, ran = False, ctx["__status__"]["cancelled"], []
+    for step in job["steps"]:
+        status = {"success": not failed and not cancelled, "failure": failed,
+                  "cancelled": cancelled}
+        sctx = {**ctx, "steps": steps, "__status__": status}
+        sid = step.get("id")
+        if not _if_holds(step.get("if"), sctx):
+            if sid:
+                steps[sid] = {"outcome": "skipped", "conclusion": "skipped", "outputs": {}}
+            continue
+        ran.append(step.get("name") or step.get("uses", step.get("run", "")).split("@")[0])
+        outcome, outputs = behave(step, sctx)
+        conclusion = "success" if outcome == "failure" and step.get("continue-on-error") is True else outcome
+        if sid:
+            steps[sid] = {"outcome": outcome, "conclusion": conclusion, "outputs": outputs}
+        failed = failed or conclusion == "failure"
+        cancelled = cancelled or outcome == "cancelled"
+    outputs = {k: _render(v, {**ctx, "steps": steps}) for k, v in job.get("outputs", {}).items()}
+    return ("failure" if failed else "cancelled" if cancelled else "success"), outputs, ran
+
+
+def test_the_expression_model_reads_this_template() -> None:
+    """Every `if:`, job output and env value in the template parses."""
+    for job in JOBS.values():
+        conditions = [job.get("if"), *(s.get("if") for s in job.get("steps", []))]
+        for cond in conditions:
+            if cond not in (None, ""):
+                _Expr(_expr_of(cond))
+        values = [*job.get("outputs", {}).values(), *job.get("env", {}).values()]
+        for step in job.get("steps", []):
+            values += [*step.get("env", {}).values(), *step.get("with", {}).values()]
+        for value in values:
+            for m in _TEMPLATE.finditer(value if isinstance(value, str) else ""):
+                _Expr(m.group(1))
+    ctx = {"a": {"b": ""}, "__status__": {}}
+    assert _eval(_Expr("a.b != 'true'").tree, ctx) is True
+    assert _eval(_Expr("a.missing == ''").tree, ctx) is True  # null == '' on GitHub
+    assert _eval(_Expr("'PASS' == 'pass'").tree, ctx) is True
+    assert _eval(_Expr("a.b || 'x'").tree, ctx) == "x"
+    assert _eval(_Expr("format('refs/heads/{0}', 'main')").tree, ctx) == "refs/heads/main"
+
+
+# ---- the gate's verdict: green on a failed gate, red when it did not finish ----
+
+VERIFY_JOBS = ("verify", "verify-retry")
+VERDICT_REFS = {
+    ("paths", "outcome"), ("paths", "outputs.ok"), ("apply", "outcome"), ("apply", "outputs.ok"),
+    ("verify", "outcome"),
+}
+OBSERVED_GATE = (
+    "${{ needs.%s.result == 'success' && needs.%s.outputs.verdict != 'pass' && 'failure' "
+    "|| needs.%s.result }}"
+)
+
+
+def _agent_step_index(job: dict) -> int:
+    (at,) = [i for i, s in enumerate(job["steps"]) if "scripts/verify.sh" in s.get("run", "")]
+    return at
+
+
+@pytest.mark.parametrize("name", VERIFY_JOBS)
+def test_the_verdict_cannot_come_from_the_step_that_runs_agent_code(name: str) -> None:
+    """The verdict is an expression in the job's outputs: block, over step
+    outcomes (the runner sets them from exit codes) and the ok markers that
+    paths and apply write before any agent code runs. Agent code in the
+    verify step can write that step's GITHUB_OUTPUT, and a process it
+    leaves behind can append to a later step's; neither reaches the verdict."""
+    job = JOBS[name]
+    expr = _expr_of(job["outputs"]["verdict"])
+    assert job["outputs"]["verdict"].strip().startswith("${{")
+    refs = set(re.findall(r"steps\.([\w-]+)\.(outcome|conclusion|outputs\.\w+)", expr))
+    assert refs == VERDICT_REFS
+    assert "steps.verify.outputs" not in expr and "conclusion" not in expr
+    steps = job["steps"]
+    agent_at = _agent_step_index(job)
+    ids = [s.get("id") for s in steps]
+    assert steps[agent_at]["id"] == "verify"
+    # Every output the verdict reads comes from a step before the agent step;
+    # of the agent step only its outcome, which no file it writes can set.
+    for step_id, field in refs:
+        assert ids.index(step_id) < agent_at or (step_id == "verify" and field == "outcome")
+    paths_at, apply_at = ids.index("paths"), ids.index("apply")
+    assert paths_at < apply_at < agent_at
+    # paths runs the base tools before the patch exists; apply runs git only.
+    assert "git apply" not in steps[paths_at]["run"]
+    assert not re.search(r"\b(python3?|bash|npm|make|pytest)\b", steps[apply_at]["run"])
+    # failed_step stays tier B: it may come from the agent step, so it is
+    # mapped to a fixed word before anyone posts or retries on it.
+    assert "steps.verify.outputs.failed_step" in job["outputs"]["failed_step"]
+
+
+@pytest.mark.parametrize("name", VERIFY_JOBS)
+def test_only_the_verify_sh_step_may_fail_without_failing_the_job(name: str) -> None:
+    job = JOBS[name]
+    steps = job["steps"]
+    lenient = [i for i, s in enumerate(steps) if "continue-on-error" in s]
+    assert lenient == [_agent_step_index(job)]
+    assert steps[lenient[0]]["continue-on-error"] is True
+    assert "continue-on-error" not in job
+    ids = [s.get("id") for s in steps]
+    paths, apply = steps[ids.index("paths")], steps[ids.index("apply")]
+    # paths and apply record a failure as an output and exit 0; ok=true is
+    # their last output, written only on success.
+    for step in (paths, apply):
+        run = step["run"]
+        assert "exit 1" not in run
+        assert 'echo "failed_step=$1" >> "$GITHUB_OUTPUT"' in run and "exit 0" in run
+        assert "failed_step=" not in run.replace('echo "failed_step=$1"', "")
+        assert run.rstrip().endswith('echo "ok=true" >> "$GITHUB_OUTPUT"')
+    assert apply["if"] == "steps.paths.outputs.ok == 'true'"
+    # Every later step runs only once apply recorded ok=true.
+    for step in steps[ids.index("apply") + 1:]:
+        assert "steps.apply.outputs.ok == 'true'" in step.get("if", ""), step.get("name")
+
+
+@pytest.mark.parametrize("name", VERIFY_JOBS)
+@pytest.mark.parametrize(
+    ("scenario", "result", "verdict", "skipped"),
+    [
+        ("pass", "success", "pass", set()),
+        ("verify.sh fails", "success", "fail", set()),
+        ("apply records a failure", "success", "fail", {"Run verify", "Collect the verify log"}),
+        ("paths records a failure", "success", "fail", {"Apply the diff", "Run verify"}),
+        ("the agent step forges its outputs", "success", "fail", set()),
+        ("a leftover process forges a later step", "success", "fail", set()),
+        ("the patch artifact is missing", "failure", "", {"Read the guarded paths", "Run verify"}),
+        ("apply crashes", "failure", "", {"Run verify", "Collect the verify log"}),
+        ("the run is cancelled during verify.sh", "cancelled", "", set()),
+        ("the log upload fails after a pass", "failure", "pass", set()),
+    ],
+)
+def test_the_verify_job_is_green_exactly_when_the_gate_reached_a_verdict(
+    name: str, scenario: str, result: str, verdict: str, skipped: set[str]
+) -> None:
+    forged = {"ok": "true", "verdict": "pass", "tree": TREE, "failed_step": "FAIL: test (exit 1)"}
+
+    def behave(step: dict, ctx: dict) -> tuple[str, dict]:
+        sid, label = step.get("id"), step.get("name") or step.get("uses", "")
+        if label.startswith("actions/download-artifact") and scenario == "the patch artifact is missing":
+            return "failure", {}
+        if sid == "paths":
+            if scenario == "paths records a failure":
+                return "success", {"failed_step": "config: no guarded paths"}
+            return "success", {"guarded": ".github .cadence scripts tool tests test",
+                               "test_roots": "tests test", "ok": "true"}
+        if sid == "apply":
+            if scenario == "apply records a failure":
+                return "success", {"failed_step": "no change: the agent produced an empty diff"}
+            if scenario == "apply crashes":
+                return "failure", {}
+            return "success", {"guarded": "", "tree": TREE, "ok": "true"}
+        if sid == "verify":
+            if scenario == "pass":
+                return "success", {}
+            if scenario == "the run is cancelled during verify.sh":
+                return "cancelled", forged
+            if scenario == "the log upload fails after a pass":
+                return "success", {}
+            # verify.sh failed, and agent code wrote what it liked to this
+            # step's GITHUB_OUTPUT.
+            return "failure", (forged if scenario == "the agent step forges its outputs"
+                               else {"failed_step": "FAIL: test (exit 1)"})
+        if label == "Collect the verify log" and scenario == "a leftover process forges a later step":
+            return "success", forged
+        if label.startswith("actions/upload-artifact") and scenario == "the log upload fails after a pass":
+            return "failure", {}
+        return "success", {}
+
+    ctx = {"github": APPROVE, "needs": {}, "inputs": {},
+           "__status__": {"success": True, "failure": False, "cancelled": False}}
+    got, outputs, ran = _simulate_steps(name, ctx, behave)
+    assert (got, outputs["verdict"]) == (result, verdict)
+    for prefix in skipped:
+        assert not any(r.startswith(prefix) for r in ran), (prefix, ran)
+
+
+@pytest.mark.parametrize(
+    ("result", "verdict", "observed"),
+    [
+        ("success", "pass", "success"),
+        ("success", "fail", "failure"),
+        ("success", "", "failure"),
+        ("failure", "", "failure"),
+        ("failure", "pass", "failure"),
+        ("cancelled", "", "cancelled"),
+        ("skipped", "", "skipped"),
+    ],
+)
+def test_observe_reads_the_gate_in_the_words_signals_py_always_had(
+    result: str, verdict: str, observed: str
+) -> None:
+    """signals.py observe takes the gate as a job result (observation
+    verify_result, gate_step, gate_caught, the first-pass verify rate). The
+    verify job is green on a failed gate now, so observe maps the verdict
+    back: every case reads exactly as it did when a failed gate failed the
+    job, and signals.py (whose bytes are the detector version) is unchanged."""
+    for name, job in (("observe", "verify"), ("observe-retry", "verify-retry")):
+        expr = JOBS[name]["env"]["VERIFY_RESULT"]
+        assert expr == OBSERVED_GATE % ((job,) * 3)
+        ctx = {"needs": {job: {"result": result, "outputs": {"verdict": verdict}}}}
+        assert _render(expr, ctx) == observed
+
+
+def test_no_consumer_reads_a_red_verify_job_as_a_failed_gate() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    for job in ("verify", "verify-retry"):
+        assert f"needs.{job}.result == 'failure'" not in text, job
+        assert f"needs.{job}.result != 'success'" not in text, job
+    readers = {
+        name for name, job in JOBS.items()
+        if re.search(r"needs\.verify(-retry)?\.(result|outputs\.verdict)", _dump(job))
+    }
+    assert readers == {"retry-gate", "observe", "observe-retry", "publish", "ledger"}
+    # Each of them reads the verdict only next to the job's result.
+    for name in readers:
+        dump = _dump(JOBS[name])
+        for job in ("verify", "verify-retry"):
+            if f"needs.{job}.outputs.verdict" in dump:
+                assert f"needs.{job}.result" in dump, (name, job)
+
+
+def test_the_run_stays_red_when_the_factory_breaks() -> None:
+    """Only the verify.sh step may fail quietly; no job ignores its own
+    failure, and in the bookkeeping jobs only artifact downloads (missing
+    when an earlier job died) continue on error."""
+    for name, job in JOBS.items():
+        assert "continue-on-error" not in job, name
+        for step in job.get("steps", []):
+            if step.get("continue-on-error") is None:
+                continue
+            if name in VERIFY_JOBS:
+                assert "scripts/verify.sh" in step.get("run", ""), name
+            else:
+                assert step.get("uses", "").startswith("actions/download-artifact@"), (name, step)
+    base = {**BUILD, "verify": ("success", {"verdict": "fail", "failed_step": "FAIL: test (exit 1)"})}
+    assert _conclusion(_simulate_run(APPROVE, base)) == "success"
+    for broken in ("publish", "ledger", "release", "verify"):
+        done = _simulate_run(APPROVE, {**base, broken: ("failure", {})})
+        assert _conclusion(done) == "failure", broken
+    # A ledger that could not book starts no learning.
+    assert "harvest" not in _ran(_simulate_run(APPROVE, {**base, "ledger": ("failure", {})}))
+
+
+# ---- end to end: one build run, real step scripts on the gate's path ----
+
+BUILD = {
+    "route": ("success", {"stage": "build", "issue": "7", "per_run_usd": "5", "max_turns": "60",
+                          "retry_on_dod_fail": "1"}),
+    "gate": ("success", {"proceed": "true", "claimed": "true", "claim_sha": "b" * 40,
+                         "spec_sha256": "c" * 64}),
+    "verify": ("success", {"verdict": "pass", "tree": TREE, "guarded": "", "failed_step": ""}),
+    "harvest": ("success", {"llm_allowed": "false", "mode": "on"}),
+    "retro-plan": ("success", {"changed": "false", "failed_plan_sha": ""}),
+}
+REPORT_GH = (
+    "#!/bin/bash\n"
+    'printf "%s\\n" "$*" >> "$GH_LOG"\n'
+    'for a in "$@"; do case "$a" in body=@*) cp "${a#body=@}" "$CAPTURE" ;; esac; done\n'
+)
+
+
+def _step_env(job_name: str, step: dict, ctx: dict) -> dict[str, str]:
+    env = {k: _render(v, ctx) for k, v in (JOBS[job_name].get("env") or {}).items()}
+    env.update({k: _render(v, {**ctx, "env": env}) for k, v in (step.get("env") or {}).items()})
+    return env
+
+
+def _real(tmp: Path, job_name: str, step: dict, ctx: dict, extra: dict, **kw) -> tuple[str, dict]:
+    """Run one step's own script with its env rendered from the context."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    proc, out = _run_script(tmp, step["run"], {**_step_env(job_name, step, ctx), **extra}, **kw)
+    assert proc.returncode in (0, 1), proc.stderr
+    return ("success" if proc.returncode == 0 else "failure"), {k: v[-1] for k, v in out.items()}
+
+
+def _base_repo(root: Path, verify_sh: str) -> tuple[Path, str]:
+    repo = root / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / "scripts" / "verify.sh").write_text(verify_sh, encoding="utf-8", newline="\n")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_ok():\n    pass\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    _git(root, "init", "-q", str(repo))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _patch(repo: Path, path: str, text: str) -> str:
+    """A patch that adds or changes one file, made in a scratch clone."""
+    scratch = repo.parent / ("scratch-" + path.replace("/", "-"))
+    _git(repo.parent, "clone", "-q", str(repo), str(scratch))
+    target = scratch / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8", newline="\n")
+    _git(scratch, "add", "-A")
+    return _git(scratch, "diff", "--cached", "--binary") + "\n"
+
+
+def _verify_behave(tmp: Path, repo: Path, base_sha: str, patch: str | None, *, missing: bool = False):
+    """verify's steps: the real paths, apply, Run verify and log collection
+    scripts on a git repo; checkout, setup and uploads as no-ops."""
+    runner = tmp / "runner"
+    if patch is not None:
+        (runner / "change").mkdir(parents=True, exist_ok=True)
+        (runner / "change" / "change.patch").write_text(patch, encoding="utf-8", newline="\n")
+    runner.mkdir(parents=True, exist_ok=True)
+    extra = {"RUNNER_TEMP": runner.as_posix(), "BASE_SHA": base_sha, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def behave(step: dict, ctx: dict) -> tuple[str, dict]:
+        uses = step.get("uses", "")
+        if uses.startswith("actions/download-artifact") and missing:
+            return "failure", {}
+        if step.get("id") in ("paths", "apply", "verify") or step.get("name") == "Collect the verify log":
+            return _real(tmp / "steps", "verify", step, ctx, extra, cwd=repo)
+        return "success", {}
+
+    return behave
+
+
+FAILING_VERIFY = (
+    "#!/bin/bash\n"
+    "# The tests it runs are agent code: they write what they like to this\n"
+    "# step's GITHUB_OUTPUT before the gate fails.\n"
+    'echo "ok=true" >> "$GITHUB_OUTPUT"\n'
+    'echo "verdict=pass" >> "$GITHUB_OUTPUT"\n'
+    "echo 'FAIL: test (exit 1)'\n"
+    "exit 1\n"
+)
+
+
+def _build_run(tmp: Path, verify_job, **overrides) -> tuple[dict, str, str, dict]:
+    """One approved build, scheduled as GitHub would: verify as given,
+    retry-gate's mapping, publish's pick and report, and ledger's record
+    run their own scripts. Returns the jobs, the issue comment, the gh calls
+    and the booked record."""
+    capture, gh_log = tmp / "comment.md", tmp / "gh.log"
+    world = tmp / "ledger"
+    world.mkdir(parents=True)
+    work, ledger_runner, ledger_env = _ledger_world(world)
+    booked: dict = {}
+
+    def observe(ctx: dict):
+        booked["observed_verify_result"] = _render(JOBS["observe"]["env"]["VERIFY_RESULT"], ctx)
+        return "success", {}
+
+    def retry_gate(ctx: dict):
+        def behave(step: dict, sctx: dict):
+            assert step["name"] == "Map the failed step", step.get("name") or step.get("uses")
+            return _real(tmp / "retry-gate", "retry-gate", step, sctx, {})
+        result, outputs, _ = _simulate_steps("retry-gate", ctx, behave)
+        return result, outputs
+
+    def publish(ctx: dict):
+        runner = tmp / "publish-runner"
+        runner.mkdir(exist_ok=True)
+        extra = {"RUNNER_TEMP": runner.as_posix(), "GITHUB_REPOSITORY": "owner/repo",
+                 "GITHUB_RUN_ID": "42", "CAPTURE": capture.as_posix(), "GH_LOG": gh_log.as_posix()}
+
+        def behave(step: dict, sctx: dict):
+            assert step.get("name") in (PICK, REPORT), step.get("name") or step.get("uses")
+            return _real(tmp / "publish", "publish", step, sctx, extra, stub_gh=REPORT_GH)
+        result, outputs, _ = _simulate_steps("publish", ctx, behave)
+        return result, outputs
+
+    def ledger(ctx: dict):
+        step = _step(JOBS["ledger"], "Record the run")
+        env = {**ledger_env, **_step_env("ledger", step, ctx)}
+        proc, _ = _run_script(world, step["run"], env, cwd=work)
+        assert proc.returncode == 0, proc.stderr
+        booked.update(json.loads(
+            (ledger_runner / "staged" / "runs" / "42-1.json").read_text(encoding="utf-8")))
+        return "success", {}
+
+    done = _simulate_run(APPROVE, {
+        **BUILD, "verify": verify_job, "retry-gate": retry_gate, "publish": publish,
+        "ledger": ledger, "observe": observe, **overrides,
+    })
+    comment = capture.read_text(encoding="utf-8") if capture.exists() else ""
+    calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+    return done, comment, calls, booked
+
+
+def _verify_job(tmp: Path, verify_sh: str, patch_of, *, missing: bool = False):
+    repo, base_sha = _base_repo(tmp / "base", verify_sh)
+    patch = patch_of(repo)
+    behave = _verify_behave(tmp / "verify", repo, base_sha, patch, missing=missing)
+
+    def run(ctx: dict):
+        result, outputs, _ = _simulate_steps("verify", ctx, behave)
+        return result, outputs
+
+    return run
+
+
+@needs_shell
+def test_an_empty_diff_ends_green_with_a_dod_failed_issue(tmp_path: Path) -> None:
+    """The live case (run 37018582265, 2026-10-02): the agent changed nothing.
+    The real apply step records `no change` and exits 0, verify is green
+    with the verdict fail, retry-gate declines (empty is not retryable),
+    publish labels the issue dod-failed and says why, ledger books dod=fail,
+    the learn chain runs, and the run is green: nobody is mailed "Run
+    failed" for a handled outcome."""
+    verify = _verify_job(tmp_path, "#!/bin/bash\nexit 0\n", lambda repo: "")
+    done, comment, calls, booked = _build_run(tmp_path, verify)
+    assert done["verify"]["result"] == "success"
+    assert done["verify"]["outputs"]["verdict"] == "fail"
+    assert done["verify"]["outputs"]["failed_step"].startswith("no change")
+    assert done["retry-gate"]["outputs"]["why"] == "not-retryable"
+    assert "agent-retry" not in _ran(done)
+    assert "The Definition of Done gate failed at: `empty`" in comment
+    assert "Automatic retry: not retried: empty failures are not retried." in comment
+    assert "labels[]=dod-failed" in calls
+    assert booked["dod"] == "fail" and booked["outcome"] == "success"
+    assert booked["observed_verify_result"] == "failure"  # as signals.py always read it
+    assert {"harvest", "learn-record", "retro-plan"} <= _ran(done)
+    assert _conclusion(done) == "success"
+
+
+@needs_shell
+def test_a_failing_verify_sh_ends_green_and_cannot_forge_a_pass(tmp_path: Path) -> None:
+    """verify.sh fails at test, and as agent code it writes ok=true and
+    verdict=pass to its own step's GITHUB_OUTPUT. The verdict is still fail,
+    the PR is not opened, and with the retry off the report says so."""
+    verify = _verify_job(
+        tmp_path, FAILING_VERIFY, lambda repo: _patch(repo, "src/app.py", "VALUE = 1\n")
+    )
+    retry_off = ("success", {**BUILD["route"][1], "retry_on_dod_fail": "0"})
+    done, comment, calls, booked = _build_run(tmp_path, verify, route=retry_off)
+    assert done["verify"]["result"] == "success"
+    assert done["verify"]["outputs"]["verdict"] == "fail"
+    assert re.fullmatch(r"[0-9a-f]{40}", done["verify"]["outputs"]["tree"])
+    assert done["verify"]["outputs"]["failed_step"] == "FAIL: test (exit 1)"
+    assert "retry-gate" not in _ran(done)
+    assert done["publish"]["outputs"]["published_try"] == ""
+    assert "The Definition of Done gate failed at: `test`" in comment
+    assert "Automatic retry: not retried: retry is off." in comment
+    assert "labels[]=dod-failed" in calls
+    assert booked["dod"] == "fail" and booked["observed_verify_result"] == "failure"
+    assert _conclusion(done) == "success"
+
+
+@needs_shell
+def test_a_verify_job_that_did_not_finish_stays_red_and_reads_as_did_not_finish(
+    tmp_path: Path,
+) -> None:
+    """Infrastructure, not the gate: the patch artifact cannot be downloaded.
+    verify fails with no verdict, nothing is retried, the report says verify
+    did not finish, ledger books dod=unknown, and the run is red."""
+    verify = _verify_job(tmp_path, "#!/bin/bash\nexit 0\n", lambda repo: None, missing=True)
+    done, comment, calls, booked = _build_run(tmp_path, verify)
+    assert done["verify"]["result"] == "failure"
+    assert done["verify"]["outputs"]["verdict"] == ""
+    assert "retry-gate" not in _ran(done)
+    assert "The Definition of Done gate failed at: `timeout`" in comment
+    assert "Automatic retry: not retried: timeout failures are not retried." in comment
+    assert "labels[]=dod-failed" in calls
+    assert booked["dod"] == "unknown" and booked["observed_verify_result"] == "failure"
+    assert _conclusion(done) == "failure"
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("make_patch", "failed", "ok"),
+    [
+        (lambda repo: "", "no change: the agent produced an empty diff", None),
+        (lambda repo: "not a patch\n", "apply: the patch does not apply to the base commit", None),
+        (lambda repo: _patch(repo, ".github/workflows/x.yml", "on: push\n"),
+         "policy: the patch changes .github/workflows/", None),
+        (lambda repo: _patch(repo, "src/app.py", "VALUE = 1\n"), None, "true"),
+    ],
+)
+def test_apply_records_its_verdict_and_exits_zero(tmp_path: Path, make_patch, failed, ok) -> None:
+    repo, base_sha = _base_repo(tmp_path / "base", "#!/bin/bash\nexit 0\n")
+    patch = make_patch(repo)
+    runner = tmp_path / "runner"
+    (runner / "change").mkdir(parents=True)
+    (runner / "change" / "change.patch").write_text(patch, encoding="utf-8", newline="\n")
+    step = next(s for s in JOBS["verify"]["steps"] if s.get("id") == "apply")
+    proc, out = _run_script(tmp_path, step["run"], {
+        "RUNNER_TEMP": runner.as_posix(), "BASE_SHA": base_sha, "GIT_CONFIG_NOSYSTEM": "1",
+        "GUARDED": ".github .cadence scripts tool tests test", "TEST_ROOTS": "tests test",
+    }, cwd=repo)
+    assert proc.returncode == 0, proc.stderr
+    assert out.get("failed_step") == ([failed] if failed else None)
+    assert out.get("ok") == ([ok] if ok else None)
+    assert ("tree" in out) == (ok == "true")
+
+
+@needs_shell
+def test_paths_records_a_config_failure_and_exits_zero(tmp_path: Path) -> None:
+    (tmp_path / "tool").mkdir()
+    (tmp_path / "tool" / "signals.py").write_text("import sys\nsys.exit(2)\n", encoding="utf-8")
+    bin_dir = tmp_path / "py-bin"
+    bin_dir.mkdir()
+    (bin_dir / "python").write_text(
+        f'#!/bin/bash\nexec "{Path(sys.executable).as_posix()}" "$@"\n', encoding="utf-8",
+        newline="\n",
+    )
+    (bin_dir / "python").chmod(0o755)
+    step = next(s for s in JOBS["verify"]["steps"] if s.get("id") == "paths")
+    proc, out = _run_script(
+        tmp_path, step["run"], {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        cwd=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert out["failed_step"] == [
+        "config: could not read learning.guarded_paths and learning.test_roots"
+    ]
+    assert "ok" not in out
+    # Without tool/signals.py the defaults apply, and ok=true comes last.
+    (tmp_path / "tool" / "signals.py").unlink()
+    proc, out = _run_script(tmp_path, step["run"], {}, cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert out["ok"] == ["true"] and "failed_step" not in out
+    assert out["guarded"] == [".github .cadence scripts tool tests test"]
+
+
+# ---- the learn chain in build runs ----
+
+LEARN_JOBS = {"harvest", "learn-record", "retro-plan"}
+
+
+def _dispatch(stage: str, ref: str = "refs/heads/main") -> tuple[dict, dict]:
+    return _event("workflow_dispatch", ref=ref), {"stage": stage, "issue": "7"}
+
+
+@pytest.mark.parametrize(
+    ("case", "github", "inputs", "jobs", "learns"),
+    [
+        ("an approved build, gate passed", APPROVE, None, {}, True),
+        ("an approved build that failed its gate", APPROVE, None,
+         {"verify": ("success", {"verdict": "fail", "failed_step": "FAIL: test (exit 1)"})}, True),
+        ("an approved build whose agent failed", APPROVE, None, {"agent": ("failure", {})}, True),
+        ("an approved build whose verify did not finish", APPROVE, None,
+         {"verify": ("failure", {})}, True),
+        ("an approved build whose ledger failed", APPROVE, None, {"ledger": ("failure", {})}, False),
+        ("an /approve the gate refused", APPROVE, None,
+         {"gate": ("success", {"proceed": "false", "claimed": ""})}, False),
+        ("an /approve route turned down", APPROVE, None,
+         {"route": ("success", {"stage": "none", "issue": ""})}, False),
+        ("a factory label: a spec run", LABEL, None,
+         {"route": ("success", {"stage": "spec", "issue": "7"})}, False),
+        ("a plain comment", COMMENT, None, {}, False),
+        ("a spec dispatch", *_dispatch("spec"), {"route": ("success", {"stage": "spec", "issue": "7"})},
+         False),
+        ("a build dispatch", *_dispatch("build"), {}, True),
+        ("a learn dispatch", *_dispatch("learn"), {}, True),
+        ("a learn dispatch off the default branch", *_dispatch("learn", "refs/heads/topic"), {},
+         False),
+        ("a reconcile dispatch", *_dispatch("reconcile"),
+         {"reconcile": ("success", {"learn_due": "true"})}, False),
+        ("the sweep, learning due", SCHEDULE, None,
+         {"reconcile": ("success", {"learn_due": "true"})}, True),
+        ("the sweep, nothing due", SCHEDULE, None,
+         {"reconcile": ("success", {"learn_due": "false"})}, False),
+    ],
+)
+def test_the_learn_chain_runs_on_schedule_a_learn_dispatch_or_after_a_booked_build(
+    case: str, github: dict, inputs: dict | None, jobs: dict, learns: bool
+) -> None:
+    done = _simulate_run(github, {**BUILD, **jobs}, inputs=inputs)
+    ran = _ran(done)
+    assert (LEARN_JOBS <= ran) == learns, (case, sorted(ran))
+    if not learns:
+        assert not ran & (LEARN_JOBS | {"classify", "retro-publish", "retro-failed"}), case
+    if github is COMMENT:
+        assert ran == set(), case  # route's filter: no runner starts at all
+    if github is LABEL:
+        assert not ran & {"gate", "agent", "verify"}, case
+
+
+def test_a_build_cancelled_before_ledger_books_it_starts_no_learning() -> None:
+    """ledger (always()) still books a cancelled build, but a cancelled run
+    starts no learning: the next sweep or build learns from it."""
+    done = _simulate_run(APPROVE, BUILD, cancel_after="publish")
+    assert {"ledger", "release"} <= _ran(done)
+    assert done["ledger"]["result"] == "success"
+    assert not _ran(done) & (LEARN_JOBS | {"classify", "retro-publish", "retro-failed"})
+
+
+@pytest.mark.parametrize(("labelling", "changed", "failed_plan"), [
+    (False, True, ""), (True, False, "d" * 64),
+])
+def test_the_learn_chain_runs_to_the_end_in_a_build_run(
+    labelling: bool, changed: bool, failed_plan: str
+) -> None:
+    """In a build run intake and reconcile are skipped, and classify is
+    skipped whenever labelling is off: every learn job still runs when its
+    own condition holds (implicit success() would skip them)."""
+    jobs = {
+        **BUILD,
+        "harvest": ("success", {"llm_allowed": "true" if labelling else "false"}),
+        "retro-plan": ("success", {"changed": "true" if changed else "false",
+                                   "failed_plan_sha": failed_plan, "plan_sha": "e" * 64}),
+    }
+    done = _simulate_run(APPROVE, jobs)
+    ran = _ran(done)
+    assert {"intake", "reconcile"} & ran == set()
+    assert ("classify" in ran) == labelling
+    assert LEARN_JOBS <= ran
+    assert ("retro-publish" in ran) == changed
+    assert ("retro-failed" in ran) == bool(failed_plan)
+    assert {"release", "publish", "observe"} <= ran
+    assert _conclusion(done) == "success"
+
+
+@needs_shell
+def test_learn_record_books_classify_beside_the_builds_own_record(tmp_path: Path) -> None:
+    """In a build run, runs/<run>-<attempt>.json is the build's record:
+    classify's spend goes to runs/<run>.learn-<attempt>.json, never refused
+    as "already recorded" (which would leave the spend unbooked)."""
+    work, runner, env = _ledger_world(tmp_path)
+    build_record = work / "state" / "runs" / "42-1.json"
+    build_record.write_text("{}\n", encoding="utf-8")
+    (runner / "classify").mkdir()
+    (runner / "classify" / "claude-result.json").write_text(
+        json.dumps({"type": "result", "total_cost_usd": 0.12, "num_turns": 3}), encoding="utf-8"
+    )
+    (runner / "classify" / "run_attempt").write_text("1\n", encoding="utf-8")
+    step = _step(JOBS["learn-record"], "Record the classify spend")
+    assert '--run-id "$GITHUB_RUN_ID.learn"' in step["run"]
+    proc, _ = _run_script(tmp_path, step["run"], {**env, "CLASSIFY_RESULT": "success"}, cwd=work)
+    assert proc.returncode == 0, proc.stderr
+    record = json.loads(
+        (runner / "harvest" / "staged" / "runs" / "42.learn-1.json").read_text(encoding="utf-8")
+    )
+    assert record["run_id"] == "42.learn" and record["stage"] == "learn"
+    assert record["booked_usd"] == 0.12 and record["issue"] is None
+    assert build_record.read_text(encoding="utf-8") == "{}\n"

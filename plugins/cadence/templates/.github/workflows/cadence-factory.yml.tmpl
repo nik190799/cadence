@@ -36,26 +36,30 @@
 # Flow. A human adds `factory` -> intake writes a spec -> publish posts it
 # (spec-ready). A user with write access replies `/approve` -> gate (budget +
 # claim, building) -> agent builds -> verify runs the Definition of Done on a
-# fresh checkout -> observe scans the attempt. If verify failed at format,
-# lint, boundaries or test (retry.on_dod_fail: 1), retry-gate checks the
-# budget again and agent-retry builds once more in the same run, from the
-# first patch, with the failed step and a log excerpt -> verify-retry ->
+# fresh checkout and outputs its verdict, pass or fail (the job stays green
+# on a failed gate: a red verify job means the gate did not finish) ->
+# observe scans the attempt. If the verdict is fail at format, lint,
+# boundaries or test (retry.on_dod_fail: 1), retry-gate checks the budget
+# again and agent-retry builds once more in the same run, from the first
+# patch, with the failed step and a log excerpt -> verify-retry ->
 # observe-retry. publish opens a draft PR (pr-open) from the attempt that
 # passed, whose commit carries a `cadence/verify` check, or labels
 # dod-failed / needs-human. ledger books the cost and the observation of
-# every attempt, release frees the claim. Hourly, reconcile re-derives stuck
-# work and says whether a learn run is due.
+# every attempt, release frees the claim, and the learn chain below runs in
+# the same run. Hourly, reconcile re-derives stuck work and says whether a
+# learn run is due.
 #
 # Learning loop (docs/LEARNING.md). In the hourly sweep when something is due,
-# or on a dispatch with stage=learn: harvest reads closed agent PRs (human
-# edits, review comments) -> classify (optional, off by default) labels
-# comments -> learn-record books the findings and the daily metrics ->
-# retro-plan climbs the ladder (note -> pattern -> check) and builds a patch
-# for .cadence/ -> retro-publish opens or updates ONE retro PR from
-# cadence/retro. A human merges it; the factory never merges, except in an
-# eval sandbox (three switches, see CADENCE_EVAL_SANDBOX). A plan whose result
-# fails scripts/verify.sh even with its checks demoted to patterns is
-# recorded by retro-failed and skipped until main or the plan changes.
+# on a dispatch with stage=learn, or in a build run once ledger has booked
+# the attempt: harvest reads closed agent PRs (human edits, review comments)
+# -> classify (optional, off by default) labels comments -> learn-record
+# books the findings and the daily metrics -> retro-plan climbs the ladder
+# (note -> pattern -> check) and builds a patch for .cadence/ ->
+# retro-publish opens or updates ONE retro PR from cadence/retro. A human
+# merges it; the factory never merges, except in an eval sandbox (three
+# switches, see CADENCE_EVAL_SANDBOX). A plan whose result fails
+# scripts/verify.sh even with its checks demoted to patterns is recorded by
+# retro-failed and skipped until main or the plan changes.
 #
 # Tokens. The jobs that run the model on untrusted text (intake, agent,
 # agent-retry, classify) hold read-only tokens and no App key; what they
@@ -99,8 +103,9 @@ on:
 # No push trigger, ever. Claims (cadence/claim/N), work branches
 # (cadence/issue-N), the ledger (cadence/state) and the retro branch
 # (cadence/retro) are all pushes. No pull_request, pull_request_target or
-# workflow_run either: merged and closed PRs are read by the hourly sweep or a
-# stage=learn dispatch, and PR heads are only ever fetched as objects.
+# workflow_run either: merged and closed PRs are read by the learn chain (the
+# hourly sweep, a stage=learn dispatch, or the end of a build run), and PR
+# heads are only ever fetched as objects.
 
 # Every job declares its own permissions; nothing is granted by default.
 permissions: {}
@@ -718,6 +723,19 @@ jobs:
   # Residual risk: agent code still runs here (it is what is being tested), so
   # a hostile patch could fake a pass via files outside the guarded paths.
   # The draft PR and the human merge stay the final gate.
+  #
+  # The job ends green whenever the gate reaches a verdict, pass or fail. A
+  # failed gate is a normal, handled outcome (publish labels the issue
+  # dod-failed and says why), so it must not turn the run red and mail the
+  # maintainer "Run failed" (seen live, run 37018582265, 2026-10-02: an empty
+  # diff failed the apply step and the whole run). The verdict is the job
+  # output `verdict`; paths and apply record a failure as an output and exit
+  # 0, every later step runs only on their ok markers, and only the step
+  # that runs scripts/verify.sh continues on error. The job still fails when
+  # the gate did not finish (checkout, artifact download, setup, a crash in
+  # paths or apply, a timeout, a cancel): every consumer reads the job's
+  # result and the verdict together, and a failed or cancelled verify job
+  # means "verify did not finish".
   verify:
     needs: [route, gate, agent]
     if: needs.agent.result == 'success'
@@ -728,8 +746,22 @@ jobs:
     outputs:
       guarded: ${{ steps.apply.outputs.guarded }}
       tree: ${{ steps.apply.outputs.tree }}
+      # The gate's verdict: pass, fail, or empty when the job reached none.
+      # Read it only together with the job's result: a verify job that
+      # failed or was cancelled did not finish, whatever this says. Tier A:
+      # an expression over step outcomes (set by the runner from exit codes)
+      # and the ok markers that paths and apply write before any agent code
+      # runs. Never an output of the verify step, which runs agent code, or
+      # of a later step, whose GITHUB_OUTPUT file a leftover agent process
+      # could append to.
+      verdict: >-
+        ${{ (steps.paths.outputs.ok == 'true' && steps.apply.outputs.ok == 'true' &&
+        steps.verify.outcome == 'success' && 'pass') ||
+        (steps.paths.outcome == 'success' && steps.paths.outputs.ok != 'true' && 'fail') ||
+        (steps.apply.outcome == 'success' && steps.apply.outputs.ok != 'true' && 'fail') ||
+        (steps.apply.outputs.ok == 'true' && steps.verify.outcome == 'failure' && 'fail') || '' }}
       # Tier B: the verify step runs agent code, which can write its own
-      # failed_step. publish maps it to a fixed word before posting it, and
+      # failed_step. retry-gate and publish map it to a fixed word, and
       # observe recomputes the gate step itself.
       failed_step: ${{ steps.paths.outputs.failed_step || steps.apply.outputs.failed_step || steps.verify.outputs.failed_step }}
     env:
@@ -757,6 +789,13 @@ jobs:
         id: paths
         run: |
           set -f # entries are names, never globs
+          # A failure here is the gate's verdict (fail), not a broken job:
+          # record it and exit 0. The next steps run only on ok=true.
+          gate_failed() {
+            echo "failed_step=$1" >> "$GITHUB_OUTPUT"
+            echo "::error title=Definition of Done failed::$1"
+            exit 0
+          }
           guarded_list="tests test .github .cadence scripts tool"
           test_list="tests test"
           if [ -f tool/signals.py ]; then
@@ -765,8 +804,7 @@ jobs:
                 | jq -r 'if type == "array" then .[] else error("not a list") end' | tr -d '\r'
             }
             if ! guarded_list=$(get learning.guarded_paths) || ! test_list=$(get learning.test_roots); then
-              echo "failed_step=config: could not read learning.guarded_paths and learning.test_roots" >> "$GITHUB_OUTPUT"
-              exit 1
+              gate_failed "config: could not read learning.guarded_paths and learning.test_roots"
             fi
           fi
           valid() { # every entry one plain directory name
@@ -776,29 +814,35 @@ jobs:
             done
           }
           if ! valid "$guarded_list" || ! valid "$test_list"; then
-            echo "failed_step=config: learning.guarded_paths or learning.test_roots holds something other than a directory name" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a directory name"
           fi
           # The graders and the config stay guarded whatever factory.yaml says.
           guarded=$(printf '%s\n' .github .cadence scripts tool $guarded_list | awk '!seen[$0]++' | tr '\n' ' ')
           echo "guarded=${guarded% }" >> "$GITHUB_OUTPUT"
           echo "test_roots=$(printf '%s ' $test_list)" >> "$GITHUB_OUTPUT"
           echo "Guarded: ${guarded% }. New files kept under: $(printf '%s ' $test_list)"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Apply the diff, then restore guarded paths from the base
         id: apply
+        if: steps.paths.outputs.ok == 'true'
         env:
           GUARDED: ${{ steps.paths.outputs.guarded }}
           TEST_ROOTS: ${{ steps.paths.outputs.test_roots }}
         run: |
+          # As in paths: a failure here is the gate's verdict, recorded, and
+          # the step exits 0. Only git runs here: no agent code yet.
+          gate_failed() {
+            echo "failed_step=$1" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Definition of Done failed::$1"
+            exit 0
+          }
           patch="$RUNNER_TEMP/change/change.patch"
           if [ ! -s "$patch" ]; then
-            echo "failed_step=no change: the agent produced an empty diff" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "no change: the agent produced an empty diff"
           fi
           if ! git apply --index "$patch"; then
-            echo "failed_step=apply: the patch does not apply to the base commit" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "apply: the patch does not apply to the base commit"
           fi
           # NUL-separated: with plain output git quotes unusual names
           # (".github/workflows/\303\251.yml"), and a quoted name would slip
@@ -814,8 +858,7 @@ jobs:
             return 1
           }
           if under .github/workflows "${touched[@]}"; then
-            echo "failed_step=policy: the patch changes .github/workflows/" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "policy: the patch changes .github/workflows/"
           fi
           # tool/ holds the graders (check_boundaries.py) and the factory tools.
           # Existing files under every guarded path (learning.guarded_paths,
@@ -826,8 +869,7 @@ jobs:
           read -r -a guarded_roots <<< "$GUARDED"
           read -r -a test_roots <<< "$TEST_ROOTS"
           if [ "${#guarded_roots[@]}" -eq 0 ]; then
-            echo "failed_step=config: no guarded paths" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "config: no guarded paths"
           fi
           is_test_root() {
             local t
@@ -860,14 +902,23 @@ jobs:
           # this tree.
           echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
           git status --short
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
       # Add your stack's runtime setup here, as in .github/workflows/cadence.yml
-      # (setup-node, setup-go, ...).
+      # (setup-node, setup-go, ...), each step with
+      # `if: steps.apply.outputs.ok == 'true'`. A setup step that fails fails
+      # the job: the gate did not finish. Installing the patch's
+      # dependencies runs agent code, so it belongs in scripts/verify.sh.
       # ---------------------------------------------------------------
 
+      # The only step here that may fail without failing the job: a failing
+      # verify.sh is the gate's verdict (this step's outcome), not a broken
+      # job, and must not turn the run red (seen live, run 37018582265).
       - name: Run verify
         id: verify
+        if: steps.apply.outputs.ok == 'true'
+        continue-on-error: true
         run: |
           set +e
           bash scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/verify-console.log"
@@ -884,14 +935,14 @@ jobs:
           exit "$rc"
 
       - name: Collect the verify log
-        if: always()
+        if: always() && steps.apply.outputs.ok == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/verify-log"
           cp .cadence/last_verify.log "$RUNNER_TEMP/verify-log/" 2>/dev/null || true
           cp "$RUNNER_TEMP/verify-console.log" "$RUNNER_TEMP/verify-log/" 2>/dev/null || true
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: always() && steps.apply.outputs.ok == 'true'
         with:
           name: verify-log-${{ github.run_id }}
           path: ${{ runner.temp }}/verify-log
@@ -935,7 +986,11 @@ jobs:
     env:
       ISSUE: ${{ needs.route.outputs.issue }}
       AGENT_RESULT: ${{ needs.agent.result }}
-      VERIFY_RESULT: ${{ needs.verify.result }}
+      # The gate in the job-result words signals.py reads (observation
+      # verify_result): success when the verdict is pass, failure when it is
+      # not (or the job failed), else the job's result (cancelled, skipped).
+      # The same values as before the verify job stayed green on a failed gate.
+      VERIFY_RESULT: ${{ needs.verify.result == 'success' && needs.verify.outputs.verdict != 'pass' && 'failure' || needs.verify.result }}
       TRY_RUN_ID: ${{ github.run_id }} # the retry is observed as <run id>.retry1
     steps:
       - name: Check the issue number
@@ -1063,13 +1118,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The one automatic retry (retry.on_dod_fail in .cadence/factory.yaml). When
-  # verify fails at format, lint, boundaries or test, retry-gate checks the
-  # daily budget in the gate's queue, agent-retry runs the agent once more in
-  # this same run (same /approve, same spec, same claim: release needs every
-  # retry job), starting from the first attempt's patch, then verify-retry
-  # and observe-retry run the scripts of verify and observe. publish uses the
-  # attempt that passed; ledger books both. Nothing here starts a run: no job
-  # dispatches a build, and route.py lets the App dispatch `spec` only.
+  # verify finishes with the verdict fail at format, lint, boundaries or
+  # test, retry-gate checks the daily budget in the gate's queue, agent-retry
+  # runs the agent once more in this same run (same /approve, same spec, same
+  # claim: release needs every retry job), starting from the first attempt's
+  # patch, then verify-retry and observe-retry run the scripts of verify and
+  # observe. publish uses the attempt that passed; ledger books both. Nothing
+  # here starts a run: no job dispatches a build, and route.py lets the App
+  # dispatch `spec` only.
   # ---------------------------------------------------------------------------
 
   # Grants the retry, or says why not. Read-only tokens, no secrets, and no
@@ -1080,10 +1136,12 @@ jobs:
   # run counted (its first attempt is not booked yet) plus one per_run_usd
   # for the retry, and writes the log excerpt with the base tools. "Grant the
   # retry" is the last step: the in-flight predicate counts a granted retry
-  # as this run's second slot.
+  # as this run's second slot. It runs only when verify finished (a green
+  # job) with the verdict fail: a verify job that did not finish is never
+  # retried.
   retry-gate:
     needs: [route, gate, agent, verify]
-    if: ${{ !cancelled() && needs.gate.outputs.proceed == 'true' && needs.route.outputs.retry_on_dod_fail == '1' && needs.agent.result == 'success' && needs.verify.result == 'failure' }}
+    if: ${{ !cancelled() && needs.gate.outputs.proceed == 'true' && needs.route.outputs.retry_on_dod_fail == '1' && needs.agent.result == 'success' && needs.verify.result == 'success' && needs.verify.outputs.verdict == 'fail' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1407,9 +1465,10 @@ jobs:
           overwrite: true
           retention-days: 14
 
-  # The Definition of Done gate for the retry: the verify job's steps, byte
-  # for byte (tests check it), on the retry's patch. Fresh checkout of the
-  # base commit, no secrets, read-only token.
+  # The Definition of Done gate for the retry: the verify job's steps and
+  # outputs, byte for byte (tests check it), on the retry's patch. Fresh
+  # checkout of the base commit, no secrets, read-only token. Green whenever
+  # the gate reaches a verdict, as verify is.
   verify-retry:
     needs: [route, gate, agent-retry]
     if: ${{ !cancelled() && needs.agent-retry.result == 'success' }}
@@ -1420,8 +1479,22 @@ jobs:
     outputs:
       guarded: ${{ steps.apply.outputs.guarded }}
       tree: ${{ steps.apply.outputs.tree }}
+      # The gate's verdict: pass, fail, or empty when the job reached none.
+      # Read it only together with the job's result: a verify job that
+      # failed or was cancelled did not finish, whatever this says. Tier A:
+      # an expression over step outcomes (set by the runner from exit codes)
+      # and the ok markers that paths and apply write before any agent code
+      # runs. Never an output of the verify step, which runs agent code, or
+      # of a later step, whose GITHUB_OUTPUT file a leftover agent process
+      # could append to.
+      verdict: >-
+        ${{ (steps.paths.outputs.ok == 'true' && steps.apply.outputs.ok == 'true' &&
+        steps.verify.outcome == 'success' && 'pass') ||
+        (steps.paths.outcome == 'success' && steps.paths.outputs.ok != 'true' && 'fail') ||
+        (steps.apply.outcome == 'success' && steps.apply.outputs.ok != 'true' && 'fail') ||
+        (steps.apply.outputs.ok == 'true' && steps.verify.outcome == 'failure' && 'fail') || '' }}
       # Tier B: the verify step runs agent code, which can write its own
-      # failed_step. publish maps it to a fixed word before posting it, and
+      # failed_step. retry-gate and publish map it to a fixed word, and
       # observe recomputes the gate step itself.
       failed_step: ${{ steps.paths.outputs.failed_step || steps.apply.outputs.failed_step || steps.verify.outputs.failed_step }}
     env:
@@ -1449,6 +1522,13 @@ jobs:
         id: paths
         run: |
           set -f # entries are names, never globs
+          # A failure here is the gate's verdict (fail), not a broken job:
+          # record it and exit 0. The next steps run only on ok=true.
+          gate_failed() {
+            echo "failed_step=$1" >> "$GITHUB_OUTPUT"
+            echo "::error title=Definition of Done failed::$1"
+            exit 0
+          }
           guarded_list="tests test .github .cadence scripts tool"
           test_list="tests test"
           if [ -f tool/signals.py ]; then
@@ -1457,8 +1537,7 @@ jobs:
                 | jq -r 'if type == "array" then .[] else error("not a list") end' | tr -d '\r'
             }
             if ! guarded_list=$(get learning.guarded_paths) || ! test_list=$(get learning.test_roots); then
-              echo "failed_step=config: could not read learning.guarded_paths and learning.test_roots" >> "$GITHUB_OUTPUT"
-              exit 1
+              gate_failed "config: could not read learning.guarded_paths and learning.test_roots"
             fi
           fi
           valid() { # every entry one plain directory name
@@ -1468,29 +1547,35 @@ jobs:
             done
           }
           if ! valid "$guarded_list" || ! valid "$test_list"; then
-            echo "failed_step=config: learning.guarded_paths or learning.test_roots holds something other than a directory name" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a directory name"
           fi
           # The graders and the config stay guarded whatever factory.yaml says.
           guarded=$(printf '%s\n' .github .cadence scripts tool $guarded_list | awk '!seen[$0]++' | tr '\n' ' ')
           echo "guarded=${guarded% }" >> "$GITHUB_OUTPUT"
           echo "test_roots=$(printf '%s ' $test_list)" >> "$GITHUB_OUTPUT"
           echo "Guarded: ${guarded% }. New files kept under: $(printf '%s ' $test_list)"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Apply the diff, then restore guarded paths from the base
         id: apply
+        if: steps.paths.outputs.ok == 'true'
         env:
           GUARDED: ${{ steps.paths.outputs.guarded }}
           TEST_ROOTS: ${{ steps.paths.outputs.test_roots }}
         run: |
+          # As in paths: a failure here is the gate's verdict, recorded, and
+          # the step exits 0. Only git runs here: no agent code yet.
+          gate_failed() {
+            echo "failed_step=$1" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Definition of Done failed::$1"
+            exit 0
+          }
           patch="$RUNNER_TEMP/change/change.patch"
           if [ ! -s "$patch" ]; then
-            echo "failed_step=no change: the agent produced an empty diff" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "no change: the agent produced an empty diff"
           fi
           if ! git apply --index "$patch"; then
-            echo "failed_step=apply: the patch does not apply to the base commit" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "apply: the patch does not apply to the base commit"
           fi
           # NUL-separated: with plain output git quotes unusual names
           # (".github/workflows/\303\251.yml"), and a quoted name would slip
@@ -1506,8 +1591,7 @@ jobs:
             return 1
           }
           if under .github/workflows "${touched[@]}"; then
-            echo "failed_step=policy: the patch changes .github/workflows/" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "policy: the patch changes .github/workflows/"
           fi
           # tool/ holds the graders (check_boundaries.py) and the factory tools.
           # Existing files under every guarded path (learning.guarded_paths,
@@ -1518,8 +1602,7 @@ jobs:
           read -r -a guarded_roots <<< "$GUARDED"
           read -r -a test_roots <<< "$TEST_ROOTS"
           if [ "${#guarded_roots[@]}" -eq 0 ]; then
-            echo "failed_step=config: no guarded paths" >> "$GITHUB_OUTPUT"
-            exit 1
+            gate_failed "config: no guarded paths"
           fi
           is_test_root() {
             local t
@@ -1552,14 +1635,23 @@ jobs:
           # this tree.
           echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
           git status --short
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
       # Add your stack's runtime setup here, as in .github/workflows/cadence.yml
-      # (setup-node, setup-go, ...).
+      # (setup-node, setup-go, ...), each step with
+      # `if: steps.apply.outputs.ok == 'true'`. A setup step that fails fails
+      # the job: the gate did not finish. Installing the patch's
+      # dependencies runs agent code, so it belongs in scripts/verify.sh.
       # ---------------------------------------------------------------
 
+      # The only step here that may fail without failing the job: a failing
+      # verify.sh is the gate's verdict (this step's outcome), not a broken
+      # job, and must not turn the run red (seen live, run 37018582265).
       - name: Run verify
         id: verify
+        if: steps.apply.outputs.ok == 'true'
+        continue-on-error: true
         run: |
           set +e
           bash scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/verify-console.log"
@@ -1576,14 +1668,14 @@ jobs:
           exit "$rc"
 
       - name: Collect the verify log
-        if: always()
+        if: always() && steps.apply.outputs.ok == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/verify-log"
           cp .cadence/last_verify.log "$RUNNER_TEMP/verify-log/" 2>/dev/null || true
           cp "$RUNNER_TEMP/verify-console.log" "$RUNNER_TEMP/verify-log/" 2>/dev/null || true
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: always() && steps.apply.outputs.ok == 'true'
         with:
           name: verify-log-retry-${{ github.run_id }}
           path: ${{ runner.temp }}/verify-log
@@ -1620,7 +1712,8 @@ jobs:
     env:
       ISSUE: ${{ needs.route.outputs.issue }}
       AGENT_RESULT: ${{ needs.agent-retry.result }}
-      VERIFY_RESULT: ${{ needs.verify-retry.result }}
+      # As in observe: the verdict in job-result words.
+      VERIFY_RESULT: ${{ needs.verify-retry.result == 'success' && needs.verify-retry.outputs.verdict != 'pass' && 'failure' || needs.verify-retry.result }}
       TRY_RUN_ID: ${{ github.run_id }}.retry1
     steps:
       - name: Check the issue number
@@ -1850,16 +1943,19 @@ jobs:
 
       # ---- build stage: which attempt passed the gate ----
       # The first attempt if verify passed, else the retry if verify-retry
-      # passed. Its tree and guarded paths are tier A (written before any
-      # agent code ran in that verify job); failed_step is tier B, so only a
-      # cleaned single line of it is passed on, and the report maps it to a
-      # fixed word.
+      # passed. A verify job passed when it finished (green) with the verdict
+      # pass; a red one did not finish, whatever its verdict says. Its tree
+      # and guarded paths are tier A (written before any agent code ran in
+      # that verify job); failed_step is tier B, so only a cleaned single line
+      # of it is passed on, and the report maps it to a fixed word.
       - name: Pick the attempt that passed
         id: pick
         if: needs.route.outputs.stage == 'build'
         env:
           VERIFY_RESULT: ${{ needs.verify.result }}
+          VERIFY_VERDICT: ${{ needs.verify.outputs.verdict }}
           RETRY_VERIFY_RESULT: ${{ needs.verify-retry.result }}
+          RETRY_VERIFY_VERDICT: ${{ needs.verify-retry.outputs.verdict }}
           TREE_1: ${{ needs.verify.outputs.tree }}
           TREE_2: ${{ needs.verify-retry.outputs.tree }}
           GUARDED_1: ${{ needs.verify.outputs.guarded }}
@@ -1868,17 +1964,34 @@ jobs:
           FAILED_2: ${{ needs.verify-retry.outputs.failed_step }}
         run: |
           one_line() { printf '%s' "$1" | tr -cd 'A-Za-z0-9 ._:/()-' | cut -c1-200; }
+          # One attempt's gate: pass or fail when its verify job finished
+          # with that verdict; unfinished when the job failed, was cancelled
+          # or gave no verdict; skipped when it never ran.
+          gate() {
+            case "$1:$2" in
+              success:pass) echo pass ;;
+              success:fail) echo fail ;;
+              success:*|failure:*|cancelled:*) echo unfinished ;;
+              *) echo skipped ;;
+            esac
+          }
+          first=$(gate "$VERIFY_RESULT" "$VERIFY_VERDICT")
+          retry=$(gate "$RETRY_VERIFY_RESULT" "$RETRY_VERIFY_VERDICT")
           try=""
-          if [ "$VERIFY_RESULT" = "success" ]; then
+          if [ "$first" = pass ]; then
             try=1 tree="$TREE_1" guarded="$GUARDED_1"
             patch="change-$GITHUB_RUN_ID" log="verify-log-$GITHUB_RUN_ID"
-          elif [ "$RETRY_VERIFY_RESULT" = "success" ]; then
+          elif [ "$retry" = pass ]; then
             try=2 tree="$TREE_2" guarded="$GUARDED_2"
             patch="change-retry-$GITHUB_RUN_ID" log="verify-log-retry-$GITHUB_RUN_ID"
           fi
-          case "$RETRY_VERIFY_RESULT" in
-            failure|cancelled) failed=$(one_line "$FAILED_2") log_failed="verify-log-retry-$GITHUB_RUN_ID" ;;
-            *) failed=$(one_line "$FAILED_1") log_failed="verify-log-$GITHUB_RUN_ID" ;;
+          # The last attempt's failed step. Empty when that attempt's verify
+          # did not finish: the report then says so.
+          failed="" log_failed="verify-log-$GITHUB_RUN_ID"
+          case "$retry" in
+            fail) failed=$(one_line "$FAILED_2") log_failed="verify-log-retry-$GITHUB_RUN_ID" ;;
+            unfinished) log_failed="verify-log-retry-$GITHUB_RUN_ID" ;;
+            *) if [ "$first" = fail ]; then failed=$(one_line "$FAILED_1"); fi ;;
           esac
           {
             if [ -n "$try" ]; then
@@ -2143,10 +2256,11 @@ jobs:
           set_state pr-open
 
       # ---- no attempt passed: dod-failed, which step, and what the retry did ----
+      # Whenever verify ran: it gave the verdict fail, or it did not finish.
       - name: Report the Definition of Done failure
-        if: steps.pick.outputs.passed == 'false' && (needs.verify.result == 'failure' || needs.verify.result == 'cancelled')
+        if: steps.pick.outputs.passed == 'false' && needs.verify.result != 'skipped'
         env:
-          FAILED_STEP: ${{ steps.pick.outputs.failed_step || 'verify did not finish (timeout or cancelled)' }}
+          FAILED_STEP: ${{ steps.pick.outputs.failed_step || 'verify did not finish (failed, timed out or cancelled)' }}
           LOG_ARTIFACT: ${{ steps.pick.outputs.log_artifact }}
           RETRY_GATE_RESULT: ${{ needs.retry-gate.result }}
           RETRY_WHY: ${{ needs.retry-gate.outputs.why }}
@@ -2168,6 +2282,7 @@ jobs:
             "no change"*) step=empty ;;
             apply*) step=apply ;;
             policy*) step=policy ;;
+            config*) step=config ;;
             "FAIL: format "*) step=format ;;
             "FAIL: lint "*) step=lint ;;
             "FAIL: boundaries "*) step=boundaries ;;
@@ -2240,6 +2355,7 @@ jobs:
   # observations/, findings/, patches/ and prs/ on the cadence/state branch,
   # never under .cadence/ (human-reviewed, restored from the base branch).
   # Every file there is created once and never changed (signals.py put).
+  # In a build run, the learn chain (harvest) starts once this job succeeded.
   ledger:
     needs: [route, gate, intake, agent, verify, observe, retry-gate, agent-retry, verify-retry, observe-retry, publish]
     if: >-
@@ -2255,8 +2371,10 @@ jobs:
       INTAKE_RESULT: ${{ needs.intake.result }}
       AGENT_RESULT: ${{ needs.agent.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
+      VERIFY_VERDICT: ${{ needs.verify.outputs.verdict }}
       AGENT_RETRY_RESULT: ${{ needs.agent-retry.result }}
       VERIFY_RETRY_RESULT: ${{ needs.verify-retry.result }}
+      VERIFY_RETRY_VERDICT: ${{ needs.verify-retry.outputs.verdict }}
       PR: ${{ needs.publish.outputs.pr_number }}
       PUB: ${{ needs.publish.outputs.published_sha }}
       PUB_TRY: ${{ needs.publish.outputs.published_try }}
@@ -2363,10 +2481,12 @@ jobs:
               exit 0
               ;;
           esac
-          case "$VERIFY_RESULT" in
-            success) dod=pass ;;
-            failure) dod=fail ;;
-            cancelled) dod=unknown ;;
+          # The verdict of a verify job that finished (green); a verify job
+          # that failed or was cancelled did not finish: unknown.
+          case "$VERIFY_RESULT:$VERIFY_VERDICT" in
+            success:pass) dod=pass ;;
+            success:fail) dod=fail ;;
+            success:*|failure:*|cancelled:*) dod=unknown ;;
             *) dod=skipped ;;
           esac
 
@@ -2422,10 +2542,10 @@ jobs:
               exit 0
               ;;
           esac
-          case "$VERIFY_RETRY_RESULT" in
-            success) dod=pass ;;
-            failure) dod=fail ;;
-            cancelled) dod=unknown ;;
+          case "$VERIFY_RETRY_RESULT:$VERIFY_RETRY_VERDICT" in
+            success:pass) dod=pass ;;
+            success:fail) dod=fail ;;
+            success:*|failure:*|cancelled:*) dod=unknown ;;
             *) dod=skipped ;;
           esac
 
@@ -2728,24 +2848,40 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The learning loop (docs/LEARNING.md): harvest -> classify -> learn-record
-  # -> retro-plan -> retro-publish. It runs after the hourly sweep when
-  # reconcile says it is due, or on a dispatch with stage=learn. No trigger
-  # type runs code from a PR head: PR heads are fetched as objects, and the
-  # jobs only run `git diff`, `git log` and `git show` on them.
+  # -> retro-plan -> retro-publish or retro-failed. It runs in three cases
+  # and never otherwise:
+  #   - the hourly sweep, when reconcile says a learn run is due;
+  #   - a dispatch with stage=learn, on the default branch;
+  #   - a build run, once ledger has booked the attempt, whatever the
+  #     verdict. GitHub runs the hourly schedule only every few hours (seen
+  #     live, 2026-10-02: 09:44, 16:16, 20:47, 00:29 UTC), so a new
+  #     observation is learned from in the run that made it. That build was
+  #     started by a human (an /approve, or a stage=build dispatch by a user
+  #     with write access) and passed route and the gate, so this adds no
+  #     path for an untrusted event: a spec run, a label event and a plain
+  #     comment never reach harvest. The build run stays in progress, and
+  #     keeps the issue's queue, until the chain is done.
+  # No trigger type runs code from a PR head: PR heads are fetched as
+  # objects, and the jobs only run `git diff`, `git log` and `git show` on
+  # them.
   # ---------------------------------------------------------------------------
 
   # Signals 3 and 4: closed factory PRs, merged or not. Reads the human's
   # commits after the agent's (fetched as objects, never checked out) and the
   # review comments of users with write access, and stages post-PR findings
   # for learn-record. Read-only tokens, no secrets. It waits in the gate's
-  # queue because it decides whether classify may spend.
+  # queue (queue: max, never cancelled) because it decides whether classify
+  # may spend. !cancelled(), not always(): an upstream job is always skipped
+  # here (reconcile in a build or a dispatch, route and ledger in the sweep),
+  # and a cancelled run should not start learning.
   harvest:
-    needs: [reconcile]
+    needs: [route, ledger, reconcile]
     if: >-
-      always() &&
+      !cancelled() &&
       ((github.event_name == 'schedule' && needs.reconcile.outputs.learn_due == 'true') ||
        (github.event_name == 'workflow_dispatch' && inputs.stage == 'learn' &&
-        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+       (needs.route.outputs.stage == 'build' && needs.ledger.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -2903,7 +3039,8 @@ jobs:
   classify:
     needs: [harvest]
     # !cancelled(): GitHub skips a job whose implicit success() sees a skipped
-    # job anywhere upstream (reconcile is skipped in a stage=learn dispatch).
+    # job anywhere upstream (reconcile is skipped in a stage=learn dispatch
+    # and in a build run, intake in a build run, route in the sweep).
     if: "!cancelled() && needs.harvest.result == 'success' && needs.harvest.outputs.llm_allowed == 'true'"
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -3002,8 +3139,8 @@ jobs:
 
   # Books what harvest and classify produced on cadence/state: post-PR
   # findings, the human deltas, harvest markers, retro decisions, the learn
-  # marker, classify's spend (stage learn) and the first metrics snapshot of
-  # the UTC day. Base tools only, on data.
+  # marker, classify's spend (stage learn, run id <run id>.learn) and the
+  # first metrics snapshot of the UTC day. Base tools only, on data.
   learn-record:
     needs: [harvest, classify]
     if: always() && needs.harvest.result == 'success'
@@ -3104,6 +3241,10 @@ jobs:
             *) echo "::warning::signals.py apply-classified exited $rc; the findings stay unclassified." ;;
           esac
 
+      # Under the run id <run id>.learn: in a build run,
+      # runs/<run>-<attempt>.json is the build's own record (ledger), and a
+      # second record there would be refused as "already recorded", leaving
+      # classify's spend unbooked.
       - name: Record the classify spend
         run: |
           staged="$RUNNER_TEMP/harvest/staged"
@@ -3127,12 +3268,12 @@ jobs:
           fi # else no cost known: ledger.py books the full per-run cap
           set +e
           python base/tool/ledger.py --config base/.cadence/factory.yaml --records-dir state/runs \
-            record --stage learn --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            record --stage learn --run-id "$GITHUB_RUN_ID.learn" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --outcome "$outcome" --dod skipped "${cost_args[@]}"
           rc=$?
           set -e
           case "$rc" in
-            0) mv "state/runs/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json" "$staged/runs/" ;;
+            0) mv "state/runs/${GITHUB_RUN_ID}.learn-${GITHUB_RUN_ATTEMPT}.json" "$staged/runs/" ;;
             1) echo "Already recorded (this job was re-run)." ;;
             *) exit "$rc" ;;
           esac
