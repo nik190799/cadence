@@ -285,7 +285,7 @@ Closed while preparing the product repo (found 2026-10-03, not yet run live):
 
 - **Nested guarded paths.** `learning.guarded_paths` and
   `learning.test_roots` accepted only top-level directory names, and
-  the product repo keeps its tests in `server/tests`: its existing tests were
+  a product repo keeps its tests in `server/tests`: its existing tests were
   neither restored before the gate nor flagged, so an agent could weaken
   one to pass. Each entry is now a relative directory path of 1 to 6
   segments of `[A-Za-z0-9_.-]{1,64}` (no `.` or `..` segment, no leading
@@ -307,7 +307,7 @@ Closed while preparing the product repo (found 2026-10-03, not yet run live):
 Closed from the product repo's first runs (seen live 2026-10-03, fixed the same day
 on `factory-1g`, not yet run live):
 
-- **An empty API key spent the day's budget.** In `a private product repo` the
+- **An empty API key spent the day's budget.** In a private product repo the
   `ANTHROPIC_API_KEY` secret existed but was empty. Three spec runs failed
   inside `claude-code-action` ("Environment variable validation failed:
   Either ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or workload identity

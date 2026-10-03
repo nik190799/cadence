@@ -88,7 +88,7 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   and no kill criterion changes; prevention is measured by the rules-on vs
   rules-frozen eval.
 - An empty or missing `ANTHROPIC_API_KEY` no longer spends the day's
-  budget (seen live in `a private product repo`: three spec runs failed inside
+  budget (seen live in a private product repo: three spec runs failed inside
   `claude-code-action` without calling the model, each was booked at the
   full $2 cap, and the issue got no word). `intake`, `agent`,
   `agent-retry` and `classify` start with one identical step, "Check the

@@ -1819,7 +1819,7 @@ def test_capped_lists_keep_what_apply_added():
 
 
 def test_guarded_roots_are_relative_directory_paths_as_ledger_checks():
-    """Nested guarded paths and test roots (server/tests, the product repo 2026-10-03):
+    """Nested guarded paths and test roots (server/tests, a product repo, 2026-10-03):
     the ladder reads them from observations and settings with ledger.py's
     shape, and refuses a "." or ".." segment."""
     ledger = b.load_tool("ledger")

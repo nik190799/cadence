@@ -151,7 +151,7 @@ def test_guarded_classes_are_always_exposed(tmp_path):
 
 
 def test_tampering_counts_nested_test_roots(tmp_path):
-    """Test roots may be nested (server/tests, the product repo 2026-10-03): an edit
+    """Test roots may be nested (server/tests, a product repo, 2026-10-03): an edit
     under one counts as tampering whichever guarded path observe named it
     after, and the ladder reads the nested root from the observation."""
     state = b.StateDir(tmp_path / "state")

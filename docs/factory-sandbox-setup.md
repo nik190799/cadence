@@ -113,7 +113,7 @@ read -rs -p 'Anthropic key: ' KEY; echo; echo "${#KEY} characters"
 [ -n "$KEY" ] && printf '%s' "$KEY" | gh secret set ANTHROPIC_API_KEY --repo "$R"; unset KEY
 ```
 
-(Seen live in `a private product repo`, 2026-10-03: the secret existed but was
+(Seen live in a private product repo, 2026-10-03: the secret existed but was
 empty, three spec runs failed, and before the key check each was booked at
 the full $2 cap.)
 

@@ -2632,7 +2632,7 @@ def test_paths_records_a_config_failure_and_exits_zero(tmp_path: Path) -> None:
 
 # ---- nested guarded paths (found preparing the product repo, 2026-10-03) ----
 #
-# the product repo keeps its tests in server/tests. With single top-level names only,
+# A product repo keeps its tests in server/tests. With single top-level names only,
 # its existing tests were neither restored before the gate nor flagged, so an
 # agent could weaken one to pass. The real paths and apply scripts run here,
 # with the real tool/ (ledger.py validates first) or a stub signals.py that

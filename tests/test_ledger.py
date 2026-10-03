@@ -878,7 +878,7 @@ def test_load_learning_defaults(tmp_path):
 
 
 def test_load_learning_accepts_nested_guarded_paths(tmp_path):
-    """the product repo keeps its tests in server/tests (found 2026-10-03)."""
+    """A product repo keeps its tests in server/tests (found 2026-10-03)."""
     path = tmp_path / "factory.yaml"
     path.write_text(
         GOOD_CONFIG
