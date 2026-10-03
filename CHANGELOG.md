@@ -103,6 +103,22 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   cap. `publish` (now also run when `intake` failed its key check) posts
   one fixed comment saying the key is missing or empty, how to set it and
   that nothing was spent, and labels the issue `needs-human`.
+- `/cadence-factory-setup` is now a real skill, no longer a stub: it detects
+  the stack, folders, test roots and CI commands, writes the gate commands
+  and `.cadence/factory.yaml`, renders the workflow, copies the tools, runs
+  `verify.sh`, creates the labels and variables, opens a setup PR from a
+  branch off origin's default branch, and prints the secret commands (with
+  a length check) for the user to run; it never handles a key.
+- `templates/tool/render_factory_workflow.py` fills the factory workflow's
+  five runtime setup slots from a stack profile
+  (`.cadence/factory-stack.yaml`: Python, Node, custom steps). It adds the
+  verify guard and the retro-plan `repo/` prefix itself, refuses unpinned
+  actions and anything that would weaken the workflow, and checks the
+  result; `tests/test_render_factory_workflow.py` re-runs the template's
+  invariants against rendered workflows.
+- `docs/factory-lite.md`: design for running without a GitHub App on
+  `GITHUB_TOKEN` (one secret); recommended as an opt-in mode, no workflow
+  change yet.
 
 ## [0.3.0-rc.2] — 2026-05-27
 

@@ -7,8 +7,10 @@ title: Factory mode
 
 > **Status: phase 1a ran live; the learning loop (phase 1b) is wired and
 > smoke-tested live, not yet shown end to end.** The first live runs are in
-> a private sandbox repo ([setup](factory-sandbox-setup.md)); the learning
-> loop is specified in [LEARNING.md](LEARNING.md).
+> a private sandbox repo; the learning loop is specified in
+> [LEARNING.md](LEARNING.md). A repository is connected with the
+> `/cadence-factory-setup` skill ([setup](factory-sandbox-setup.md); built
+> 2026-10-03, not yet run on a live repo).
 > Work happens on the `factory` branch. Nothing here ships until the phase 1 gate on
 > 2026-11-13. The full reasoning, research and sources live in the
 > [Cadence Factory decision doc](https://claude.ai/code/artifact/2e1da873-1f03-4602-b3ab-7618ce6e2d56).
@@ -72,7 +74,9 @@ plugins/cadence/                       ships to users
   skills/cadence-intake/               issue → spec file, non-interactive; reads learned lessons (run live)
   skills/cadence-findings/             review comments → enum labels, read-only (phase 1b; off by default)
   skills/cadence-retro/                retrospective; "Factory mode" reads and decides the retro PR
-  skills/cadence-factory-setup/        GitHub App, budget, autonomy       (stub; manual steps below)
+  skills/cadence-factory-setup/        guided setup: stack, gate commands, factory.yaml,
+                                       rendered workflow, setup PR, secret commands for
+                                       the user (built; not yet run on a live repo)
   schemas/                             observation, classify, lessons, retro-plan, metrics
                                        (new); retro and cadence-yaml (extended)
   templates/.github/workflows/
@@ -85,6 +89,8 @@ plugins/cadence/                       ships to users
     cadence.yml.tmpl                   the CI template: contents read, actions pinned to a SHA
   templates/factory.yaml.tmpl          budget, max_turns, retry, autonomy, learning (done)
   templates/tool/
+    render_factory_workflow.py         fills the workflow's five runtime setup slots from a
+                                       stack profile; refuses unpinned actions (done, tested)
     route.py                           event → stage, deterministic       (done, tested)
     intake_sanitize.py                 issue → clean, untrusted-marked file (done, tested)
     ledger.py                          cost caps (build and learn pools), retry switch, run log (done, tested)
@@ -101,7 +107,9 @@ eval/                                  internal replay harness; never ships
 docs/FACTORY.md                        this page
 docs/LEARNING.md                       the learning loop: signals, ladder, metrics, security
 docs/factory-auth.md                   research: OIDC workload identity instead of the stored API key
-docs/factory-sandbox-setup.md          GitHub App, secrets and labels for the sandbox
+docs/factory-sandbox-setup.md          setup: the skill, the renderer, secrets; the manual
+                                       steps as an appendix
+docs/factory-lite.md                   design: GITHUB_TOKEN instead of the App (one secret)
 ```
 
 ### Wiring (2026-10-03)
@@ -349,8 +357,14 @@ Still to do:
 - **Findings and the retro job** are wired: see [LEARNING.md](LEARNING.md)
   for the signals, the ladder, the metrics and the security model. Next is
   the live demo in the sandbox (a planted `src/db` edge over three issues).
-- **`/cadence-factory-setup`** is still a stub: setup is manual
-  ([sandbox steps](factory-sandbox-setup.md)).
+- **Run `/cadence-factory-setup` on a live repo.** The skill and
+  `render_factory_workflow.py` are built and tested offline (every rendered
+  workflow re-runs the template's security tests); setup by hand took about an
+  hour. The manual steps stay as an appendix of the
+  [setup page](factory-sandbox-setup.md).
+- **One secret instead of three?** [factory-lite.md](factory-lite.md)
+  designs a mode on `GITHUB_TOKEN` with no App: recommended as opt-in for
+  solo repositories, after the App path has run live on a second repo.
 
 ## Rules that hold in every phase
 
@@ -382,7 +396,7 @@ Still to do:
 ## Open questions
 
 - Can GitHub's app-manifest flow make "register your own App" close to
-  one click from a CLI?
+  one click from a CLI? (Or skip the App: [factory-lite.md](factory-lite.md).)
 - What does one real run cost on a 2-vCPU private-repo runner?
 - Does Jev beat a cheap LLM judge for repeat matching? (Shadow trial in
   phase 1; see the decision doc.)

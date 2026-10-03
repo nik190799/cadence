@@ -27,6 +27,7 @@ templates/
     ledger.py                     # factory: cost cap + run log (stub, factory branch)
     claim.py                      # factory: per-issue ref-claim lock (stub, factory branch)
     reconcile.py                  # factory: hourly sweep (stub, factory branch)
+    render_factory_workflow.py    # factory: fills the workflow's runtime setup slots (factory branch)
   .github/
     workflows/
       cadence.yml.tmpl            # CI workflow for user's repo

@@ -60,7 +60,7 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
    Submission-doc fixes and a `plugins/cadence/README.md` are prepared locally on
    `chore/directory-prep`, unpushed, to ship as the first update after approval.
 3. ~~**Start phase 1a, the infra spine.**~~ **Done 2026-10-01; gate passed two
-   weeks early.** First unattended end-to-end run in `nik190799/cadence-eval-sandbox`:
+   weeks early.** First unattended end-to-end run in the private sandbox repo:
    issue #1 -> spec ($0.23, 12 turns) -> human `/approve` -> build ($0.21, 16 turns)
    -> verify green -> draft PR #2, claim released, ledger booked. The one live
    bug (bubblewrap missing on Ubuntu 24.04 runners) is fixed in `f71c6e0`.
@@ -208,7 +208,7 @@ as the 2026-11-13 gate.
 
 | # | Item | What every user gets | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | In progress; ~Oct 10 |
+| 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | Built 2026-10-03: the setup skill and `tool/render_factory_workflow.py` (four repo shapes tested); live proof on a fresh repo pending |
 | 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Now |
 
 **After Nov 13** (parked: useful, but outside phase 1):
