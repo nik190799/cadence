@@ -208,7 +208,7 @@ as the 2026-11-13 gate.
 
 | # | Item | What every user gets | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | Built 2026-10-03: the setup skill and `tool/render_factory_workflow.py` (four repo shapes tested); live proof on a fresh repo pending |
+| 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | Done 2026-10-03: a fresh Flutter repo went from install to its first merged factory PR (a DST bug fix with a regression test, $0.48) with no hand edits to generated files; the lessons (pin the toolchain, a drifted formatter, LF scripts) are in the skills |
 | 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Done 2026-10-03: CI job `privacy` on every push and PR, plus a pre-push hook; the deny-list comes from a secret or `gh` at check time, never from the repo |
 
 **After Nov 13** (parked: useful, but outside phase 1):
