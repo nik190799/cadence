@@ -164,6 +164,8 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - **Learning lagged by hours.** GitHub ran the hourly schedule only at 09:44, 16:16, 20:47 and 00:29 UTC. Fix: a build run runs the learn chain itself once `ledger` has booked the attempt, whatever the verdict, as a `stage=learn` dispatch would. Only a human-started build that passed route and the gate gets there; spec runs, label events and plain comments never do; no trigger or dispatch added. `harvest` needs `route`, `ledger` and `reconcile` and uses `!cancelled()` (a cancelled run no longer starts learning); classify's spend is booked as `<run>.learn` so it never collides with the build's own record. Cost: the build run, and the issue's queue, stay open until the chain is done.
 - **Next:** install `factory-1e` in the sandbox and see both live: a staged gate failure that ends green with `dod-failed`, and a build whose run ends with harvest, learn-record and retro-plan.
 
+**2026-10-03, both sandbox findings fixed and proven live** (`33073be`, sandbox `6463ed9`): issue #10 re-approved; the agent again changed nothing, so the gate failed at `empty`. Run 37096711149 concluded **success** (no "Run failed" email), #10 got `dod-failed` with the reason, retry-gate declined, ledger booked `dod: fail` ($0.13), and harvest, learn-record and retro-plan ran in the same run (`learn/37096711149-1.json`, 6 observations seen). This also proves job outputs can read `steps.<id>.outcome` on GitHub. The leftover `scratch-verify-check` workflow in the sandbox is disabled.
+
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
