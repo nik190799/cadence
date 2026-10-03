@@ -145,6 +145,12 @@ jobs:
       per_run_usd: ${{ steps.caps.outputs.per_run_usd }}
       max_turns: ${{ steps.caps.outputs.max_turns }}
       retry_on_dod_fail: ${{ steps.caps.outputs.retry_on_dod_fail }}
+      # The guarded paths and test roots of a build, for the agent prompts:
+      # space-separated relative directory paths, validated by the paths
+      # step below (the gate's own script, on the same base config) before
+      # they are written. Never text from the issue or a comment.
+      guarded: ${{ steps.paths.outputs.guarded }}
+      test_roots: ${{ steps.paths.outputs.test_roots }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -209,6 +215,79 @@ jobs:
               out.write(f"max_turns={config.max_turns or 60}\n")
               out.write(f"retry_on_dod_fail={config.retry_on_dod_fail}\n")
           PY
+
+      # verify's paths step, byte for byte, on the same base commit, so the
+      # agent prompts name exactly the paths the gate guards. Builds only.
+      - name: Read the guarded paths (base config, before the patch)
+        id: paths
+        if: steps.decide.outputs.stage == 'build'
+        run: |
+          set -f # entries are paths, never globs
+          # A failure here is the gate's verdict (fail), not a broken job:
+          # record it and exit 0. The next steps run only on ok=true.
+          gate_failed() {
+            echo "failed_step=$1" >> "$GITHUB_OUTPUT"
+            echo "::error title=Definition of Done failed::$1"
+            exit 0
+          }
+          guarded_list="tests test .github .cadence scripts tool"
+          test_list="tests test"
+          if [ -f tool/signals.py ]; then
+            get() { # one JSON list from learning.*, printed one entry per line
+              python tool/signals.py config --config .cadence/factory.yaml --get "$1" \
+                | jq -r 'if type == "array" then .[] else error("not a list") end' | tr -d '\r'
+            }
+            if ! guarded_list=$(get learning.guarded_paths) || ! test_list=$(get learning.test_roots); then
+              gate_failed "config: could not read learning.guarded_paths and learning.test_roots"
+            fi
+          fi
+          # Every entry a relative directory path such as server/tests: 1 to
+          # 6 segments of [A-Za-z0-9_.-]{1,64}, none of them "." or "..", so
+          # no leading or trailing slash and no glob. At most 16 per list.
+          # tool/ledger.py refuses anything else first (GUARDED_PATH_RE).
+          valid() {
+            local p n=0
+            for p in $1; do
+              n=$((n + 1))
+              [[ "$n" -le 16 && "$p" =~ ^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64}){0,5}$ ]] || return 1
+              [[ "/$p/" != */./* && "/$p/" != */../* ]] || return 1
+            done
+          }
+          if ! valid "$guarded_list" || ! valid "$test_list"; then
+            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a relative directory path"
+          fi
+          within() { # within PATH ROOT...: is PATH one of the ROOTs, or under one?
+            local path="$1" root
+            shift
+            for root in "$@"; do
+              if [[ "$path" == "$root" || "$path" == "$root"/* ]]; then return 0; fi
+            done
+            return 1
+          }
+          # A test root is guarded too (existing files there are restored);
+          # only new files under it are kept, so it is never in the graders.
+          for t in $test_list; do
+            if ! within "$t" $guarded_list || within "$t" .github .cadence scripts tool; then
+              gate_failed "config: each of learning.test_roots must lie inside learning.guarded_paths and outside .github .cadence scripts and tool"
+            fi
+          done
+          # The graders and the config stay guarded whatever factory.yaml says.
+          guarded=$(printf '%s\n' .github .cadence scripts tool $guarded_list | awk '!seen[$0]++' | tr '\n' ' ')
+          test_roots=$(printf '%s\n' $test_list | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+          echo "guarded=${guarded% }" >> "$GITHUB_OUTPUT"
+          echo "test_roots=${test_roots% }" >> "$GITHUB_OUTPUT"
+          echo "Guarded: ${guarded% }. New files kept under: ${test_roots% }"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      # A config the gate would refuse at `config` stops the build here,
+      # before any spend (ledger.py, in the caps step, refuses it first).
+      - name: Stop on guarded paths the gate would refuse
+        if: steps.paths.outcome == 'success' && steps.paths.outputs.ok != 'true'
+        env:
+          FAILED_STEP: ${{ steps.paths.outputs.failed_step }}
+        run: |
+          echo "::error title=Not started::$FAILED_STEP. Fix learning.guarded_paths and learning.test_roots in .cadence/factory.yaml."
+          exit 1
 
   # The spending gate for builds. One global queue (queue: max, never cancel),
   # so two issues can never both pass the budget check on the same headroom.
@@ -661,7 +740,7 @@ jobs:
 
             Rules:
             - Leave your changes in the working tree. Do not commit, push, create branches or call the GitHub API; the workflow packages your diff.
-            - Existing files under tests/, test/, .github/, .cadence/, scripts/ and tool/ are restored from the base branch before the Definition of Done gate runs, so edits to them are discarded, and new files under .github/, .cadence/, scripts/ and tool/ are left out of it. You may add new test files under tests/ or test/.
+            - The guarded paths, from .cadence/factory.yaml, are `${{ needs.route.outputs.guarded }}` (directories relative to the repository root). Existing files under them are restored from the base branch before the Definition of Done gate runs, so edits to them are discarded, and new files under them are left out of it, except under the test roots: `${{ needs.route.outputs.test_roots || 'none' }}`. You may add new test files under a test root.
             - Leave tests/fixtures/retro/ alone: it holds the samples the learned checks are proven on.
             - Never create or change files under .github/workflows/: such a change fails the gate.
             - Run `bash scripts/verify.sh` before you finish and fix what it reports.
@@ -788,7 +867,7 @@ jobs:
       - name: Read the guarded paths (base config, before the patch)
         id: paths
         run: |
-          set -f # entries are names, never globs
+          set -f # entries are paths, never globs
           # A failure here is the gate's verdict (fail), not a broken job:
           # record it and exit 0. The next steps run only on ok=true.
           gate_failed() {
@@ -807,20 +886,42 @@ jobs:
               gate_failed "config: could not read learning.guarded_paths and learning.test_roots"
             fi
           fi
-          valid() { # every entry one plain directory name
-            local p
+          # Every entry a relative directory path such as server/tests: 1 to
+          # 6 segments of [A-Za-z0-9_.-]{1,64}, none of them "." or "..", so
+          # no leading or trailing slash and no glob. At most 16 per list.
+          # tool/ledger.py refuses anything else first (GUARDED_PATH_RE).
+          valid() {
+            local p n=0
             for p in $1; do
-              [[ "$p" =~ ^[A-Za-z0-9_.-]{1,64}$ && "$p" != "." && "$p" != ".." ]] || return 1
+              n=$((n + 1))
+              [[ "$n" -le 16 && "$p" =~ ^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64}){0,5}$ ]] || return 1
+              [[ "/$p/" != */./* && "/$p/" != */../* ]] || return 1
             done
           }
           if ! valid "$guarded_list" || ! valid "$test_list"; then
-            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a directory name"
+            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a relative directory path"
           fi
+          within() { # within PATH ROOT...: is PATH one of the ROOTs, or under one?
+            local path="$1" root
+            shift
+            for root in "$@"; do
+              if [[ "$path" == "$root" || "$path" == "$root"/* ]]; then return 0; fi
+            done
+            return 1
+          }
+          # A test root is guarded too (existing files there are restored);
+          # only new files under it are kept, so it is never in the graders.
+          for t in $test_list; do
+            if ! within "$t" $guarded_list || within "$t" .github .cadence scripts tool; then
+              gate_failed "config: each of learning.test_roots must lie inside learning.guarded_paths and outside .github .cadence scripts and tool"
+            fi
+          done
           # The graders and the config stay guarded whatever factory.yaml says.
           guarded=$(printf '%s\n' .github .cadence scripts tool $guarded_list | awk '!seen[$0]++' | tr '\n' ' ')
+          test_roots=$(printf '%s\n' $test_list | awk 'NF && !seen[$0]++' | tr '\n' ' ')
           echo "guarded=${guarded% }" >> "$GITHUB_OUTPUT"
-          echo "test_roots=$(printf '%s ' $test_list)" >> "$GITHUB_OUTPUT"
-          echo "Guarded: ${guarded% }. New files kept under: $(printf '%s ' $test_list)"
+          echo "test_roots=${test_roots% }" >> "$GITHUB_OUTPUT"
+          echo "Guarded: ${guarded% }. New files kept under: ${test_roots% }"
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Apply the diff, then restore guarded paths from the base
@@ -862,8 +963,9 @@ jobs:
           fi
           # tool/ holds the graders (check_boundaries.py) and the factory tools.
           # Existing files under every guarded path (learning.guarded_paths,
-          # read above) are restored from the base. New files are kept only
-          # under the test roots (learning.test_roots): anywhere else a new
+          # read above; a path may be nested, such as server/tests) are
+          # restored from the base. New files under a guarded path are kept
+          # only under a test root (learning.test_roots): anywhere else a new
           # file could steer the graders (a tool/yaml.py would shadow PyYAML
           # for tool/check_boundaries.py).
           read -r -a guarded_roots <<< "$GUARDED"
@@ -871,13 +973,22 @@ jobs:
           if [ "${#guarded_roots[@]}" -eq 0 ]; then
             gate_failed "config: no guarded paths"
           fi
-          is_test_root() {
-            local t
-            for t in "${test_roots[@]}"; do
-              if [ "$1" = "$t" ]; then return 0; fi
+          in_any() { # in_any NAME DIR...: is NAME under any DIR/?
+            local f="$1" dir
+            shift
+            for dir in "$@"; do
+              if [[ "$f" == "$dir"/* ]]; then return 0; fi
             done
             return 1
           }
+          # New files first, so a restored directory never meets a dropped
+          # file of the same name. Literal pathspecs: a new file named
+          # "tool/*" removes itself and nothing else.
+          for f in "${added[@]}"; do
+            if in_any "$f" "${guarded_roots[@]}" && ! in_any "$f" "${test_roots[@]}"; then
+              git --literal-pathspecs rm --quiet --force -- "$f"
+            fi
+          done
           guarded=""
           for p in "${guarded_roots[@]}"; do
             if under "$p" "${touched[@]}"; then
@@ -885,11 +996,6 @@ jobs:
             fi
             if git cat-file -e "$BASE_SHA:$p" 2>/dev/null; then
               git checkout "$BASE_SHA" -- "$p"
-            fi
-            if ! is_test_root "$p"; then
-              for f in "${added[@]}"; do
-                if [[ "$f" == "$p"/* ]]; then git rm --quiet --force -- "$f"; fi
-              done
             fi
           done
           guarded="${guarded# }"
@@ -1411,7 +1517,7 @@ jobs:
 
             Rules:
             - Leave your changes in the working tree. Do not commit, push, create branches or call the GitHub API; the workflow packages your diff.
-            - Existing files under tests/, test/, .github/, .cadence/, scripts/ and tool/ are restored from the base branch before the Definition of Done gate runs, so edits to them are discarded, and new files under .github/, .cadence/, scripts/ and tool/ are left out of it. You may add new test files under tests/ or test/.
+            - The guarded paths, from .cadence/factory.yaml, are `${{ needs.route.outputs.guarded }}` (directories relative to the repository root). Existing files under them are restored from the base branch before the Definition of Done gate runs, so edits to them are discarded, and new files under them are left out of it, except under the test roots: `${{ needs.route.outputs.test_roots || 'none' }}`. You may add new test files under a test root.
             - Leave tests/fixtures/retro/ alone: it holds the samples the learned checks are proven on.
             - Never create or change files under .github/workflows/: such a change fails the gate.
             - Run `bash scripts/verify.sh` before you finish and fix what it reports.
@@ -1521,7 +1627,7 @@ jobs:
       - name: Read the guarded paths (base config, before the patch)
         id: paths
         run: |
-          set -f # entries are names, never globs
+          set -f # entries are paths, never globs
           # A failure here is the gate's verdict (fail), not a broken job:
           # record it and exit 0. The next steps run only on ok=true.
           gate_failed() {
@@ -1540,20 +1646,42 @@ jobs:
               gate_failed "config: could not read learning.guarded_paths and learning.test_roots"
             fi
           fi
-          valid() { # every entry one plain directory name
-            local p
+          # Every entry a relative directory path such as server/tests: 1 to
+          # 6 segments of [A-Za-z0-9_.-]{1,64}, none of them "." or "..", so
+          # no leading or trailing slash and no glob. At most 16 per list.
+          # tool/ledger.py refuses anything else first (GUARDED_PATH_RE).
+          valid() {
+            local p n=0
             for p in $1; do
-              [[ "$p" =~ ^[A-Za-z0-9_.-]{1,64}$ && "$p" != "." && "$p" != ".." ]] || return 1
+              n=$((n + 1))
+              [[ "$n" -le 16 && "$p" =~ ^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64}){0,5}$ ]] || return 1
+              [[ "/$p/" != */./* && "/$p/" != */../* ]] || return 1
             done
           }
           if ! valid "$guarded_list" || ! valid "$test_list"; then
-            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a directory name"
+            gate_failed "config: learning.guarded_paths or learning.test_roots holds something other than a relative directory path"
           fi
+          within() { # within PATH ROOT...: is PATH one of the ROOTs, or under one?
+            local path="$1" root
+            shift
+            for root in "$@"; do
+              if [[ "$path" == "$root" || "$path" == "$root"/* ]]; then return 0; fi
+            done
+            return 1
+          }
+          # A test root is guarded too (existing files there are restored);
+          # only new files under it are kept, so it is never in the graders.
+          for t in $test_list; do
+            if ! within "$t" $guarded_list || within "$t" .github .cadence scripts tool; then
+              gate_failed "config: each of learning.test_roots must lie inside learning.guarded_paths and outside .github .cadence scripts and tool"
+            fi
+          done
           # The graders and the config stay guarded whatever factory.yaml says.
           guarded=$(printf '%s\n' .github .cadence scripts tool $guarded_list | awk '!seen[$0]++' | tr '\n' ' ')
+          test_roots=$(printf '%s\n' $test_list | awk 'NF && !seen[$0]++' | tr '\n' ' ')
           echo "guarded=${guarded% }" >> "$GITHUB_OUTPUT"
-          echo "test_roots=$(printf '%s ' $test_list)" >> "$GITHUB_OUTPUT"
-          echo "Guarded: ${guarded% }. New files kept under: $(printf '%s ' $test_list)"
+          echo "test_roots=${test_roots% }" >> "$GITHUB_OUTPUT"
+          echo "Guarded: ${guarded% }. New files kept under: ${test_roots% }"
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Apply the diff, then restore guarded paths from the base
@@ -1595,8 +1723,9 @@ jobs:
           fi
           # tool/ holds the graders (check_boundaries.py) and the factory tools.
           # Existing files under every guarded path (learning.guarded_paths,
-          # read above) are restored from the base. New files are kept only
-          # under the test roots (learning.test_roots): anywhere else a new
+          # read above; a path may be nested, such as server/tests) are
+          # restored from the base. New files under a guarded path are kept
+          # only under a test root (learning.test_roots): anywhere else a new
           # file could steer the graders (a tool/yaml.py would shadow PyYAML
           # for tool/check_boundaries.py).
           read -r -a guarded_roots <<< "$GUARDED"
@@ -1604,13 +1733,22 @@ jobs:
           if [ "${#guarded_roots[@]}" -eq 0 ]; then
             gate_failed "config: no guarded paths"
           fi
-          is_test_root() {
-            local t
-            for t in "${test_roots[@]}"; do
-              if [ "$1" = "$t" ]; then return 0; fi
+          in_any() { # in_any NAME DIR...: is NAME under any DIR/?
+            local f="$1" dir
+            shift
+            for dir in "$@"; do
+              if [[ "$f" == "$dir"/* ]]; then return 0; fi
             done
             return 1
           }
+          # New files first, so a restored directory never meets a dropped
+          # file of the same name. Literal pathspecs: a new file named
+          # "tool/*" removes itself and nothing else.
+          for f in "${added[@]}"; do
+            if in_any "$f" "${guarded_roots[@]}" && ! in_any "$f" "${test_roots[@]}"; then
+              git --literal-pathspecs rm --quiet --force -- "$f"
+            fi
+          done
           guarded=""
           for p in "${guarded_roots[@]}"; do
             if under "$p" "${touched[@]}"; then
@@ -1618,11 +1756,6 @@ jobs:
             fi
             if git cat-file -e "$BASE_SHA:$p" 2>/dev/null; then
               git checkout "$BASE_SHA" -- "$p"
-            fi
-            if ! is_test_root "$p"; then
-              for f in "${added[@]}"; do
-                if [[ "$f" == "$p"/* ]]; then git rm --quiet --force -- "$f"; fi
-              done
             fi
           done
           guarded="${guarded# }"
@@ -2147,7 +2280,7 @@ jobs:
             if [ "$conclusion" = success ]; then
               printf '`scripts/verify.sh` passed on a fresh checkout with no secrets, on exactly the tree of this commit.\n\n'
             elif [ -n "$GUARDED" ]; then
-              printf 'The patch changes %s. The gate ran with the existing files there restored from the base branch and new files outside `tests/` left out, so this commit holds changes the gate never ran. Review them by hand.\n\n' "$GUARDED"
+              printf 'The patch changes %s. The gate ran with the existing files there restored from the base branch and new files outside the test roots left out, so this commit holds changes the gate never ran. Review them by hand.\n\n' "$GUARDED"
             else
               printf 'The tree of this commit is not the tree the gate tested. Review it by hand.\n\n'
             fi

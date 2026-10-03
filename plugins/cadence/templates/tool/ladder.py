@@ -307,7 +307,10 @@ _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9_.@+/-]{1,300}$")
 _SAFE_GLOB = re.compile(r"^[A-Za-z0-9_.@*-][A-Za-z0-9_.@/*-]{0,199}$")
-_ROOT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# A guarded path or test root (learning.guarded_paths, learning.test_roots):
+# a relative directory path of 1 to 6 segments, none "." or ".."; the same
+# shape as ledger.GUARDED_PATH_RE (tests/test_ladder.py checks).
+_ROOT_PATH = re.compile(r"^[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64}){0,5}$")
 _FIXTURE_NAME = re.compile(r"^[0-9a-f]{8}$")
 _WHY = re.compile(r"^[a-z0-9-]{1,40}$")
 _NEEDS_KEY = re.compile(r"^[A-Za-z0-9_./@+:>-]{1,200}$")
@@ -541,6 +544,15 @@ _COUNTS = (
 )
 
 
+def _root_path(value: Any) -> bool:
+    """A guarded path or test root: ``_ROOT_PATH`` with no "." or ".." segment."""
+    return (
+        isinstance(value, str)
+        and bool(_ROOT_PATH.fullmatch(value))
+        and not any(segment in (".", "..") for segment in value.split("/"))
+    )
+
+
 def settings_from(cfg: Any) -> Settings:
     """Settings from any object with the learning keys as attributes."""
     defaults = Settings()
@@ -560,10 +572,8 @@ def settings_from(cfg: Any) -> Settings:
     if not isinstance(values["retire_dormant"], bool):
         raise LadderError("learning.retire_dormant must be true or false")
     roots = values["test_roots"]
-    if isinstance(roots, str) or not all(
-        isinstance(r, str) and _ROOT_NAME.fullmatch(r) and r not in (".", "..") for r in roots
-    ):
-        raise LadderError("learning.test_roots must be a list of directory names")
+    if isinstance(roots, str) or not all(_root_path(r) for r in roots):
+        raise LadderError("learning.test_roots must be a list of relative directory paths")
     values["test_roots"] = tuple(roots)
     return Settings(**values)
 
@@ -898,7 +908,7 @@ def parse_observation(raw: Any, stem: str | None = None) -> Observation:
     guarded = []
     for item in items("guarded"):
         root = item.get("root")
-        _need(isinstance(root, str) and _ROOT_NAME.fullmatch(root), "guarded.root")
+        _need(_root_path(root), "guarded.root")
         _need(item.get("op") in ("add", "modify", "delete"), "guarded.op")
         guarded.append(GuardedOp(root, item["op"], _str_path(item.get("path"))))
     hits = []

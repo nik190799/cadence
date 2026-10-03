@@ -166,7 +166,20 @@ In `.cadence/factory.yaml`, set sandbox-sized caps, for example
 `per_run_usd: 2.00` and `daily_usd: 6.00`, and keep the `learning:` block
 with its defaults: `mode: "on"` (quoted), `classify: false`. The sandbox
 keeps its tests in `test/`, which the default `guarded_paths` and
-`test_roots` already cover.
+`test_roots` already cover. A project whose tests live deeper lists the
+directory itself, as a relative path (1 to 6 segments, no `.` or `..`, no
+glob, at most 16 per list). For tests in `server/tests`:
+
+```yaml
+learning:
+  mode: "on"
+  guarded_paths: [server/tests, tests, .github, .cadence, scripts, tool]
+  test_roots: [server/tests, tests]
+```
+
+Existing files under a guarded path are restored before the gate; new
+files there are kept only under a test root. Keep `tests` guarded: it
+holds `tests/fixtures/retro/`.
 
 The learning loop adds two things the project's own tooling must accept:
 

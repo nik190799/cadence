@@ -518,6 +518,131 @@ def test_observe_a_changed_test_file_clears_missing_test(tmp_path, attempt):
     assert not any(k.startswith("missing-test:") for k in observation["classes"])
 
 
+# --- 2b. observe: nested guarded paths and test roots (Backroom, 2026-10-03) ------
+
+NESTED_FACTORY_YAML = FACTORY_YAML + (
+    "  guarded_paths: [server/tests, deploy/config]\n"
+    "  test_roots: [server/tests]\n"
+)
+NESTED_BASE = {
+    ".cadence/factory.yaml": NESTED_FACTORY_YAML,
+    ".cadence/cadence.yaml": CADENCE_YAML,
+    "server/app/__init__.py": "",
+    "server/app/api.py": "def handler():\n    return 1\n",
+    "server/tests/test_api.py": "def test_api():\n    assert 1 + 1 == 2\n",
+    "server/tests/conftest.py": "",
+    "deploy/config/settings.yaml": "level: strict\n",
+    "tests/test_calc.py": "def test_add():\n    assert 1\n",
+    "tool/helper.py": "X = 1\n",
+}
+
+
+@pytest.fixture(scope="module")
+def nested_base(tmp_path_factory) -> tuple[Path, str]:
+    return make_base(tmp_path_factory.mktemp("nested") / "base", NESTED_BASE)
+
+
+def test_observe_flags_operations_under_nested_guarded_paths(tmp_path, nested_base):
+    att = make_attempt(
+        tmp_path,
+        {
+            "server/tests/test_api.py": "def test_api():\n    pass\n",  # weakened
+            "server/tests/helpers.py": "def make():\n    return 1\n",  # new, test root
+            "deploy/config/extra.yaml": "level: lax\n",
+            "server/app/api.py": "def handler():\n    return 2\n",
+            "tests/test_calc.py": "def test_add():\n    assert 2\n",  # not guarded here
+            "tool/helper.py": None,  # always guarded
+        },
+        shared=nested_base,
+    )
+    observation, findings, _ = run_observe(att, verify="success")
+    assert observation["evidence"]["guarded"] == [
+        {"root": "deploy/config", "op": "add", "path": "deploy/config/extra.yaml"},
+        {"root": "server/tests", "op": "modify", "path": "server/tests/test_api.py"},
+        {"root": "tool", "op": "delete", "path": "tool/helper.py"},
+    ]
+    assert observation["classes"] == [
+        "guarded:deploy/config:add",
+        "guarded:server/tests:modify",
+        "guarded:tool:delete",
+    ]
+    files = {f["path"]: f for f in observation["evidence"]["files"]}
+    # A new file under the nested test root is a test, matched by no glob.
+    assert files["server/tests/helpers.py"]["test"] is True
+    assert files["server/tests/helpers.py"]["source"] is False
+    assert files["server/app/api.py"]["source"] is True
+    assert files["deploy/config/extra.yaml"]["source"] is False
+    (weakened,) = [f for f in findings if f["factory"]["class_key"] == "guarded:server/tests:modify"]
+    assert weakened["what_happened"] == (
+        "Agent patch for #7 tried to modify server/tests/test_api.py under guarded path "
+        "server/tests/."
+    )
+    assert weakened["factory"]["signal"] == "guarded" and weakened["factory"]["trust"] == "A"
+    assert_valid(observation, findings)
+
+
+def test_observe_a_file_under_a_nested_test_root_is_a_test(tmp_path, nested_base):
+    # check_api.py matches none of the default test_globs; the root makes it a test.
+    att = make_attempt(
+        tmp_path / "with",
+        {
+            "server/app/api.py": "def handler():\n    return 2\n",
+            "server/tests/check_api.py": "def test_handler():\n    assert True\n",
+        },
+        shared=nested_base,
+    )
+    observation, _, _ = run_observe(att, verify="success")
+    assert observation["classes"] == []
+    att = make_attempt(
+        tmp_path / "without", {"server/app/api.py": "def handler():\n    return 2\n"},
+        shared=nested_base,
+    )
+    observation, _, _ = run_observe(att, verify="success")
+    assert observation["classes"] == ["missing-test:server/app"]
+
+
+def test_observe_names_the_deepest_guarded_path_or_test_root(tmp_path):
+    base_files = {
+        **NESTED_BASE,
+        ".cadence/factory.yaml": FACTORY_YAML
+        + "  guarded_paths: [server]\n  test_roots: [server/tests]\n",
+    }
+    att = make_attempt(
+        tmp_path,
+        {
+            "server/tests/test_api.py": "def test_api():\n    pass\n",
+            "server/tests/test_new.py": "def test_new():\n    assert True\n",
+            "server/new.py": "NEW = 1\n",
+            "server/app/api.py": "def handler():\n    return 2\n",
+        },
+        base_files,
+    )
+    observation, findings, _ = run_observe(att, verify="success")
+    assert observation["evidence"]["guarded"] == [
+        {"root": "server", "op": "modify", "path": "server/app/api.py"},
+        {"root": "server", "op": "add", "path": "server/new.py"},
+        {"root": "server/tests", "op": "modify", "path": "server/tests/test_api.py"},
+    ]
+    assert_valid(observation, findings)
+
+
+def test_failing_tests_and_test_added_count_nested_test_roots(tmp_path):
+    base = tmp_path / "base"
+    write(base, "server/tests/check_api.py", "def test_x():\n    assert 0\n")
+    log = "FAILED server/tests/check_api.py::test_x - assert 0\n"
+    globs = ledger.DEFAULT_TEST_GLOBS
+    assert signals.failing_tests_from_logs([log], base, globs) == []
+    assert signals.failing_tests_from_logs([log], base, globs, ("server/tests",)) == [
+        "server/tests/check_api.py"
+    ]
+    added = ("A", "server/tests/check_api.py", set(), set(), None, globs)
+    assert signals._edit_kind(*added) is None
+    assert signals._edit_kind(*added, ("server/tests",)) == "test-added"
+    assert signals._edit_kind(*added, ("server/test",)) is None  # whole segments only
+    assert signals.is_test_path("server/tests/unit/x.py", (), ("server/tests",))
+    assert not signals.is_test_path("server/tests", (), ("server/tests",))
+
+
 # --- 3. observe: the verify log, gate step and agent ------------------------------
 
 
@@ -1817,6 +1942,43 @@ def test_config_defaults_and_errors(tmp_path, capsys):
     )
     assert signals.main(["config", "--config", str(config), "--get", "learning.mode"]) == 2
     assert signals.main(["config", "--config", str(tmp_path / "absent.yaml"), "--get", "learning.mode"]) == 2
+
+
+def test_config_reads_nested_guarded_paths(tmp_path, capsys):
+    config = tmp_path / "factory.yaml"
+    config.write_text(
+        "budget:\n  per_run_usd: 5\n  daily_usd: 25\n"
+        "learning:\n  guarded_paths: [server/tests, web/src/__tests__, deploy/config]\n"
+        "  test_roots: [server/tests, web/src/__tests__]\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert signals.main(["config", "--config", str(config), "--get", "learning.guarded_paths"]) == 0
+    assert json.loads(capsys.readouterr().out) == ["server/tests", "web/src/__tests__", "deploy/config"]
+    assert signals.main(["config", "--config", str(config), "--get", "learning.test_roots"]) == 0
+    assert json.loads(capsys.readouterr().out) == ["server/tests", "web/src/__tests__"]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "  guarded_paths: ['../x']\n",
+        "  guarded_paths: ['/x']\n",
+        "  guarded_paths: ['x/']\n",
+        "  guarded_paths: ['a/./b']\n",
+        "  guarded_paths: ['a/*']\n",
+        "  guarded_paths: ['a/b/c/d/e/f/g']\n",
+        "  guarded_paths: [server/tests]\n  test_roots: [server]\n",
+        "  guarded_paths: [tool/tests]\n  test_roots: [tool/tests]\n",
+    ],
+)
+def test_config_refuses_bad_nested_paths(tmp_path, capsys, block):
+    config = tmp_path / "factory.yaml"
+    config.write_text(
+        "budget:\n  per_run_usd: 5\n  daily_usd: 25\nlearning:\n" + block, encoding="utf-8"
+    )
+    assert signals.main(["config", "--config", str(config), "--get", "learning.guarded_paths"]) == 2
+    assert "learning." in capsys.readouterr().err
 
 
 # --- 11. small pure pieces ------------------------------------------------------------

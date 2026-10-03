@@ -877,6 +877,39 @@ def test_load_learning_defaults(tmp_path):
     assert learning.classify_effective is False
 
 
+def test_load_learning_accepts_nested_guarded_paths(tmp_path):
+    """Backroom keeps its tests in server/tests (found 2026-10-03)."""
+    path = tmp_path / "factory.yaml"
+    path.write_text(
+        GOOD_CONFIG
+        + "learning:\n"
+        "  guarded_paths: [server/tests, web/src/__tests__, deploy, a/b/c/d/e/f]\n"
+        "  test_roots: [server/tests, web/src/__tests__, deploy/fixtures]\n",
+        encoding="utf-8",
+    )
+    learning = ledger.load_learning(path)
+    assert learning.guarded_paths == ("server/tests", "web/src/__tests__", "deploy", "a/b/c/d/e/f")
+    # A test root is a guarded path or lies under one.
+    assert learning.test_roots == ("server/tests", "web/src/__tests__", "deploy/fixtures")
+    # The defaults keep only the default roots that lie in the guarded paths.
+    path.write_text(GOOD_CONFIG + "learning:\n  guarded_paths: [server/tests]\n", encoding="utf-8")
+    assert ledger.load_learning(path).test_roots == ()
+    path.write_text(GOOD_CONFIG + "learning:\n  guarded_paths: [tests/unit, test]\n", encoding="utf-8")
+    assert ledger.load_learning(path).test_roots == ("test",)
+
+
+def test_guarded_path_helpers():
+    assert ledger.path_within("server/tests", "server")
+    assert ledger.path_within("server", "server")
+    assert not ledger.path_within("server2", "server")
+    assert ledger.deepest_root("server/tests/a.py", ("server", "server/tests")) == "server/tests"
+    assert ledger.deepest_root("server/tests", ("server/tests",)) is None  # the dir itself
+    assert ledger.deepest_root("serverx/a.py", ("server",)) is None
+    assert ledger.effective_guarded(("tests", "tool", "server/tests")) == (
+        ".github", ".cadence", "scripts", "tool", "tests", "server/tests",
+    )
+
+
 def test_load_learning_default_learn_cap_stays_inside_a_small_budget(tmp_path):
     path = tmp_path / "factory.yaml"
     path.write_text("budget:\n  per_run_usd: 0.1\n  daily_usd: 0.2\n", encoding="utf-8")
@@ -916,9 +949,19 @@ def test_eval_sandbox_never_classifies(tmp_path):
         ("  repeat_window: -1\n", "repeat_window"),
         ("  window_days: true\n", "window_days"),
         ("  guarded_paths: ['..']\n", "guarded_paths"),
-        ("  guarded_paths: ['a/b']\n", "guarded_paths"),
+        ("  guarded_paths: ['../x']\n", "guarded_paths"),
+        ("  guarded_paths: ['/x']\n", "guarded_paths"),
+        ("  guarded_paths: ['x/']\n", "guarded_paths"),
+        ("  guarded_paths: ['a/./b']\n", "guarded_paths"),
+        ("  guarded_paths: ['a//b']\n", "guarded_paths"),
+        ("  guarded_paths: ['a/*']\n", "guarded_paths"),
+        ("  guarded_paths: ['a/b/c/d/e/f/g']\n", "guarded_paths"),
+        ("  guarded_paths: [" + ", ".join(f"g{i}" for i in range(17)) + "]\n", "guarded_paths"),
         ("  guarded_paths: tests\n", "guarded_paths"),
         ("  test_roots: [spec]\n", "test_roots"),
+        ("  guarded_paths: [server/tests]\n  test_roots: [server]\n", "test_roots"),
+        ("  guarded_paths: [tool]\n  test_roots: [tool]\n", "test_roots"),
+        ("  guarded_paths: [scripts/tests]\n  test_roots: [scripts/tests]\n", "test_roots"),
         ("  classify: 'yes'\n", "classify"),
         ("  model: 'bad model'\n", "model"),
         ("  budget:\n    per_run_usd: 2\n    daily_usd: 1\n", "per_run_usd"),

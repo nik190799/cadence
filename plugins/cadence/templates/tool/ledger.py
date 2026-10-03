@@ -36,7 +36,11 @@ Config (``--config``, default ``.cadence/factory.yaml``)::
     (``per_run_usd``, default 0.25, and ``daily_usd``, default
     min(1.00, budget.daily_usd)) caps the learn steps' model spend, inside
     the global daily cap: ``0 < per_run_usd <= daily_usd <=
-    budget.daily_usd``.
+    budget.daily_usd``. ``guarded_paths`` and ``test_roots`` hold at most
+    16 relative directory paths each (``server/tests``: 1 to 6 segments of
+    ``[A-Za-z0-9_.-]``, none ``.`` or ``..``); every test root lies inside
+    a guarded path and outside ``.github``, ``.cadence``, ``scripts`` and
+    ``tool``, which the gate always guards.
 
 Records (``--records-dir``, default ``.cadence/runs``):
     One JSON file per run attempt, ``<run_id>-<run_attempt>.json``,
@@ -119,7 +123,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 try:
     import yaml
@@ -150,6 +154,14 @@ DEFAULT_GUARDED_PATHS: tuple[str, ...] = (
     "tool",
 )
 DEFAULT_TEST_ROOTS: tuple[str, ...] = ("tests", "test")
+# The graders and the config: the Definition of Done gate guards these
+# whatever learning.guarded_paths says, and no test root may lie in them (a
+# new tool/yaml.py would shadow PyYAML for tool/check_boundaries.py).
+ALWAYS_GUARDED: tuple[str, ...] = (".github", ".cadence", "scripts", "tool")
+# learning.guarded_paths and learning.test_roots hold at most this many
+# entries each, of at most MAX_PATH_SEGMENTS segments.
+MAX_GUARDED_ENTRIES = 16
+MAX_PATH_SEGMENTS = 6
 DEFAULT_TEST_GLOBS: tuple[str, ...] = (
     "tests/**",
     "test/**",
@@ -177,8 +189,13 @@ EXIT_BAD_INPUT = 2
 # used with fullmatch: ``$`` would also accept a trailing newline.
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SHA40_RE = re.compile(r"[0-9a-f]{40}")
-# A guarded root is one path segment; it ends up in shell loops and globs.
-_GUARDED_ROOT_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# A guarded path (or test root) is a relative directory path: 1 to 6
+# segments of [A-Za-z0-9_.-]{1,64} joined by "/", none of them "." or "..".
+# So no leading or trailing slash, no "//" and no glob: it ends up in shell
+# loops, git pathspecs and prefix matches. The workflow's paths step checks
+# the same shape in bash (tests/test_factory_workflow.py runs both).
+GUARDED_PATH_RE = r"^[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64}){0,5}$"
+_GUARDED_PATH = re.compile(GUARDED_PATH_RE)
 _MODEL_RE = re.compile(r"[A-Za-z0-9._:-]{0,100}")
 _GLOB_RE = re.compile(r"[^\x00-\x1f\x7f]{1,200}")
 _MAX_GLOBS = 50
@@ -476,6 +493,68 @@ def _learning_strings(
     return tuple(out)
 
 
+def valid_guarded_path(path: Any) -> bool:
+    """True for a relative directory path a guarded path or test root may
+    be: ``GUARDED_PATH_RE`` and no ``.`` or ``..`` segment."""
+    return (
+        isinstance(path, str)
+        and bool(_GUARDED_PATH.fullmatch(path))
+        and not any(segment in (".", "..") for segment in path.split("/"))
+    )
+
+
+def path_within(path: str, root: str) -> bool:
+    """``path`` is ``root`` or lies under it, in whole segments
+    (``server/tests`` is within ``server``; ``server2`` is not)."""
+    return path == root or path.startswith(root + "/")
+
+
+def deepest_root(path: str, roots: Iterable[str]) -> str | None:
+    """The deepest of ``roots`` that the file ``path`` lies under, or None.
+
+    The roots that hold one path are all prefixes of it, so the longest is
+    the deepest."""
+    best: str | None = None
+    for root in roots:
+        if path.startswith(root + "/") and (best is None or len(root) > len(best)):
+            best = root
+    return best
+
+
+def effective_guarded(guarded_paths: Iterable[str]) -> tuple[str, ...]:
+    """What the gate guards: ``ALWAYS_GUARDED``, then ``guarded_paths``,
+    without repeats (the workflow's paths step builds the same list)."""
+    out: list[str] = []
+    for root in (*ALWAYS_GUARDED, *guarded_paths):
+        if root not in out:
+            out.append(root)
+    return tuple(out)
+
+
+def _learning_paths(
+    raw: dict[str, Any], key: str, default: tuple[str, ...], where: str
+) -> tuple[str, ...]:
+    if key not in raw or raw[key] is None:
+        return default
+    value = raw[key]
+    if not isinstance(value, list) or len(value) > MAX_GUARDED_ENTRIES:
+        raise LedgerError(
+            f"{where}.{key} must be a list of at most {MAX_GUARDED_ENTRIES} directory paths"
+        )
+    out: list[str] = []
+    for item in value:
+        if not valid_guarded_path(item):
+            raise LedgerError(
+                f"{where}.{key} has an invalid entry {item!r}: use a relative directory "
+                f"path such as server/tests, 1 to {MAX_PATH_SEGMENTS} segments of "
+                "[A-Za-z0-9_.-], no '.' or '..' segment, no leading or trailing '/', "
+                "no glob"
+            )
+        if item not in out:
+            out.append(item)
+    return tuple(out)
+
+
 def _learning_money(budget: dict[str, Any], key: str, where: str) -> float | None:
     if key not in budget or budget[key] is None:
         return None
@@ -517,20 +596,30 @@ def parse_learning(
 
     mode = _learning_mode(raw.get("mode", "on"), where)
 
-    guarded = _learning_strings(
-        raw, "guarded_paths", DEFAULT_GUARDED_PATHS, _GUARDED_ROOT_RE, where
+    guarded = _learning_paths(raw, "guarded_paths", DEFAULT_GUARDED_PATHS, where)
+
+    def inside(root: str, parents: Iterable[str]) -> bool:
+        return any(path_within(root, parent) for parent in parents)
+
+    default_roots = tuple(
+        root
+        for root in DEFAULT_TEST_ROOTS
+        if inside(root, guarded) and not inside(root, ALWAYS_GUARDED)
     )
-    if any(root in (".", "..") for root in guarded):
-        raise LedgerError(f"{where}.guarded_paths may not contain '.' or '..'")
-    default_roots = tuple(root for root in DEFAULT_TEST_ROOTS if root in guarded)
-    test_roots = _learning_strings(
-        raw, "test_roots", default_roots, _GUARDED_ROOT_RE, where
-    )
-    stray = [root for root in test_roots if root not in guarded]
+    test_roots = _learning_paths(raw, "test_roots", default_roots, where)
+    # A test root is guarded too (existing files there are restored); only
+    # new files under it are kept.
+    stray = [root for root in test_roots if not inside(root, guarded)]
     if stray:
         raise LedgerError(
-            f"{where}.test_roots must be a subset of guarded_paths (not: "
+            f"{where}.test_roots must each be a guarded path or lie under one (not: "
             f"{', '.join(stray)})"
+        )
+    graders = [root for root in test_roots if inside(root, ALWAYS_GUARDED)]
+    if graders:
+        raise LedgerError(
+            f"{where}.test_roots may not be or lie under {', '.join(ALWAYS_GUARDED)}: "
+            f"new files there could steer the graders (not: {', '.join(graders)})"
         )
     test_globs = _learning_strings(raw, "test_globs", DEFAULT_TEST_GLOBS, _GLOB_RE, where)
     edit_ignore = _learning_strings(

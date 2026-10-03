@@ -32,7 +32,7 @@ or model.
 | Issue labelled `factory` | GitHub Issues | Untrusted text; read with no secrets |
 | Spec, then `/approve` from a user with write access | `cadence-intake` skill | A human gate |
 | Agent job builds the change | `claude-code-action` on the user's runner | No push token; uploads its diff as an artifact |
-| Verify job | Fresh checkout; tests and `.cadence/` restored from the base branch | No secrets; runs `verify.sh` and outputs the verdict, pass or fail. A failed gate leaves the job (and the run) green; a red verify job means the gate did not finish |
+| Verify job | Fresh checkout; tests (top-level or nested, such as `server/tests`) and `.cadence/` restored from the base branch | No secrets; runs `verify.sh` and outputs the verdict, pass or fail. A failed gate leaves the job (and the run) green; a red verify job means the gate did not finish |
 | One retry, if verify failed at format, lint, boundaries or test | The same run: the agent again from its first patch, then verify again | The same approval, claim and caps; the daily budget is checked first |
 | Publish job | Fresh checkout | A freshly minted GitHub App token; opens the draft PR |
 | Human merge | GitHub | A human gate |
@@ -124,11 +124,11 @@ factory itself broke (`verify` did not finish, or `publish`, `ledger` or
 
 | Job | Runs when | Tokens | Does |
 |---|---|---|---|
-| `route` | a `factory` label, an `/approve` comment, or a dispatch | `GITHUB_TOKEN`: contents read | Looks up the sender's permission; `route.py` picks `spec`, `build` or `none`; reads the caps and `retry.on_dod_fail` from `factory.yaml` |
+| `route` | a `factory` label, an `/approve` comment, or a dispatch | `GITHUB_TOKEN`: contents read | Looks up the sender's permission; `route.py` picks `spec`, `build` or `none`; reads the caps and `retry.on_dod_fail` from `factory.yaml`; for a build, reads `learning.guarded_paths` and `learning.test_roots` with `verify`'s own paths script, byte for byte, and outputs them for the agent prompts (a list the gate would refuse fails `route`, before any spend) |
 | `gate` | build | App token (contents write); `GITHUB_TOKEN`: actions read, issues write | One global queue. Re-checks the live labels (a second `/approve` that waited in the issue's queue stops here), finds the approved spec and outputs its sha256 (`spec_sha256`), counts the slots already spending (a build whose retry was granted holds two), `ledger.py check`, `claim.py acquire`, label `building`. A refusal comments and ends the run with nothing booked |
 | `intake` | spec | `GITHUB_TOKEN`: contents and issues read; `ANTHROPIC_API_KEY` | Sanitizes the issue; the `cadence-intake` skill writes one file and nothing else |
-| `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; uploads `change.patch` and the cost result |
-| `verify` | the agent finished | contents read, no secrets | Reads `learning.guarded_paths` and `learning.test_roots` with the base tools before the patch (`.github/`, `.cadence/`, `scripts/` and `tool/` are always guarded), applies the patch to the base commit, restores the guarded paths and leaves out new files there (except under the test roots, `tests/` and `test/` by default), records the tree it tests, runs `verify.sh`. A patch that touches `.github/workflows/` fails. Outputs `verdict` (`pass` or `fail`): an expression over step outcomes and the `ok` markers of the steps that run before any agent code, so nothing agent code writes can set it. The paths and apply steps record a failure (`config`, `no change`, `apply`, `policy`) as an output and exit 0, and only the `verify.sh` step continues on error, so the job is green whenever the gate reached a verdict. It fails only when the gate did not finish (checkout, artifact download, setup, a crash, a timeout, a cancel), and every consumer then reads "verify did not finish" |
+| `agent` | build, gate passed | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | Builds; the prompt names the guarded paths and test roots `route` validated (never a hard-coded list); uploads `change.patch` and the cost result |
+| `verify` | the agent finished | contents read, no secrets | Reads `learning.guarded_paths` and `learning.test_roots` with the base tools before the patch (`.github/`, `.cadence/`, `scripts/` and `tool/` are always guarded; an entry may be nested, such as `server/tests`), applies the patch to the base commit, leaves out new files under a guarded path (by their literal names) except under the test roots (`tests/` and `test/` by default), restores every existing file under a guarded path, records the tree it tests, runs `verify.sh`. A patch that touches `.github/workflows/` fails. Outputs `verdict` (`pass` or `fail`): an expression over step outcomes and the `ok` markers of the steps that run before any agent code, so nothing agent code writes can set it. The paths and apply steps record a failure (`config`, `no change`, `apply`, `policy`) as an output and exit 0, and only the `verify.sh` step continues on error, so the job is green whenever the gate reached a verdict. It fails only when the gate did not finish (checkout, artifact download, setup, a crash, a timeout, a cancel), and every consumer then reads "verify did not finish" |
 | `observe` | build past the gate, the agent ran (whatever verify said) | contents read, no secrets | Passes `signals.py` the gate in job-result words, as before the verdict existed (`success` for pass; `failure` for fail or a failed job). Applies the patch to a scratch worktree of the base and only reads it (`python -I`, base tools and config): import edges and rule hits on added lines, guarded operations, missing tests, failing tests and the gate step from the verify log. It also reads the approved spec from `gate`'s `cadence-input` artifact, only if its sha256 equals `gate`'s `spec_sha256`, and records the active base lessons it cites (`lessons_cited`, informational). The observation and findings leave as a job output (`signals.py observe`) |
 | `retry-gate` | verify finished with the verdict `fail` and `retry.on_dod_fail` is 1 (a verify job that did not finish is never retried) | `GITHUB_TOKEN`: actions and contents read, no secrets | Waits in the gate's queue. Maps verify's failed step to a fixed word: only `format`, `lint`, `boundaries` and `test` are retried (never `apply`, `policy`, a config error, an empty patch or a timeout). Counts the slots in flight with this run included, then `ledger.py check`: one more `per_run_usd` must fit the daily cap. Writes a cleaned, size-limited excerpt of the verify log with the base tools (`signals.py excerpt`). Its last step, "Grant the retry", is what the in-flight count sees |
 | `agent-retry` | the retry was granted | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | The agent job once more, with the same tools and caps: applies the first patch (with git only, last before the agent, leaving out `.claude/` and `.mcp.json`), and gets the failed step and the excerpt as untrusted data. Uploads `change-retry` and its cost result |
@@ -261,6 +261,29 @@ run live):
   `stage=learn` dispatch work as before, except that a cancelled run no
   longer starts learning.
 
+Closed while preparing Backroom (found 2026-10-03, not yet run live):
+
+- **Nested guarded paths.** `learning.guarded_paths` and
+  `learning.test_roots` accepted only top-level directory names, and
+  Backroom keeps its tests in `server/tests`: its existing tests were
+  neither restored before the gate nor flagged, so an agent could weaken
+  one to pass. Each entry is now a relative directory path of 1 to 6
+  segments of `[A-Za-z0-9_.-]{1,64}` (no `.` or `..` segment, no leading
+  or trailing `/`, no glob), at most 16 per list. A test root is a guarded
+  path or lies under one, and never under `.github`, `.cadence`, `scripts`
+  or `tool`. `ledger.py` checks this first (so `route`'s caps step refuses
+  a bad config before any spend), and the paths step checks it again in
+  bash, in `route`, `verify` and `verify-retry` (one script, byte for
+  byte). The apply step leaves out a new file under a guarded path unless
+  it lies under a test root, removing it by its literal name (a new file
+  named `tool/[ab].py` no longer takes `tool/a.py` with it), and then
+  restores every existing file under a guarded path. `observe` flags the
+  same operations, named after the deepest guarded path or test root
+  that holds the file, and counts a file under a test root as a test (for
+  missing-test, and for `edit:test-added` in harvest). The agent prompts
+  name the configured lists, from `route`'s validated outputs, instead
+  of a hard-coded `tests/, test/, ...`.
+
 Still to do:
 
 - **Run it live** in the sandbox: spec, approve, build, PR ran on
@@ -278,6 +301,10 @@ Still to do:
   `tests/` (a new `tests/conftest.py`). A green `cadence/verify` check
   means `verify.sh` passed, not that it could not be faked. The draft PR
   and the human merge remain the real gate.
+- **Keep the retro fixtures guarded.** `tests/fixtures/retro/` is guarded
+  because it lies under `tests`. A repo whose `guarded_paths` leaves
+  `tests` out (only `server/tests`, say) should list
+  `tests/fixtures/retro` itself.
 - **Findings and the retro job** are wired: see [LEARNING.md](LEARNING.md)
   for the signals, the ladder, the metrics and the security model. Next is
   the live demo in the sandbox (a planted `src/db` edge over three issues).
@@ -288,8 +315,9 @@ Still to do:
 
 - Users bring their own Anthropic API key and their own GitHub App.
   Cadence never resells, proxies or pays for model usage.
-- The agent job never holds a push token. Tests, CI config and
-  `.cadence/` are restored from the base branch before the gate runs.
+- The agent job never holds a push token. Tests (wherever
+  `learning.guarded_paths` says they live), CI config and `.cadence/`
+  are restored from the base branch before the gate runs.
 - Only a human starts a build: an `/approve`, or a `stage=build` dispatch
   by a user with write access. No job dispatches one, and the one
   automatic retry runs inside the run that human started.

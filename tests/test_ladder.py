@@ -1816,3 +1816,19 @@ def test_capped_lists_keep_what_apply_added():
     kept = ladder.Applier._capped(plan_items + added, 100, 100)
     assert len(kept) == 100 and kept[-1] == added[0] and kept[:99] == plan_items[:99]
     assert ladder.Applier._capped(plan_items[:3] + added, 3, 100) == plan_items[:3] + added
+
+
+def test_guarded_roots_are_relative_directory_paths_as_ledger_checks():
+    """Nested guarded paths and test roots (server/tests, Backroom 2026-10-03):
+    the ladder reads them from observations and settings with ledger.py's
+    shape, and refuses a "." or ".." segment."""
+    ledger = b.load_tool("ledger")
+    assert ladder._ROOT_PATH.pattern == ledger.GUARDED_PATH_RE
+    for root in ("tests", "server/tests", "web/src/__tests__", ".github", "a/b/c/d/e/f"):
+        assert ladder._root_path(root) and ledger.valid_guarded_path(root), root
+    for root in ("..", "../x", "a/./b", "a/..", "/x", "x/", "a//b", "a/*", "a/b/c/d/e/f/g", 3):
+        assert not ladder._root_path(root) and not ledger.valid_guarded_path(root), root
+    key = "guarded:server/tests:modify"
+    assert ladder.pattern_text(key, [4, 9]).startswith(
+        "Do not modify or delete existing files under `server/tests/`; the gate restores them"
+    )
