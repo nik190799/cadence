@@ -3,3 +3,4 @@
 # fails in bash with "$'\r': command not found", including the copy
 # /cadence-init scaffolds into user repos from the installed plugin.
 *.sh text eol=lf
+scripts/git-hooks/* text eol=lf

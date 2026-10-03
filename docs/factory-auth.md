@@ -306,7 +306,7 @@ All sources were read on 2026-10-02.
     ones can opt in): `repo:OWNER@OWNER_ID/REPO@REPO_ID:...`.
 
   The sandbox repo was created on 2026-10-01 (`gh api
-  repos/nik190799/cadence-eval-sandbox --jq .created_at`), so its `sub`
+  repos/<owner>/<repo> --jq .created_at`), so its `sub`
   uses the immutable form. The examples in Anthropic's GitHub guide use
   the old form, and a rule copied from them fails with
   `match_subject_prefix`.

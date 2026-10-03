@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Refuses to push commits that carry private repo names, personal email
+# addresses, or a non-no-reply author/committer (scripts/privacy_check.py).
+# The private repo names are read with `gh repo list <owner> --visibility
+# private` at push time and are never stored in this repository.
+#
+# Install for every worktree of a clone:
+#   cp scripts/git-hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+root="$(git rev-parse --show-toplevel)"
+py="$(command -v python3 || command -v python)"
+input="$(cat)"
+script="$root/scripts/privacy_check.py"
+tmp=""
+if [ ! -f "$script" ]; then
+  # A branch without the checker (an older branch): use the factory branch's copy.
+  tmp="$(mktemp)"
+  if git show origin/factory:scripts/privacy_check.py > "$tmp" 2>/dev/null; then
+    script="$tmp"
+  else
+    rm -f "$tmp"
+    echo "pre-push: scripts/privacy_check.py not found; privacy check skipped" >&2
+    exit 0
+  fi
+fi
+printf '%s\n' "$input" | "$py" "$script" --pre-push --repo "$root"
+rc=$?
+[ -n "$tmp" ] && rm -f "$tmp"
+exit $rc
