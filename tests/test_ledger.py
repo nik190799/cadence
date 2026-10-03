@@ -1037,3 +1037,134 @@ def test_retry_setting_leaves_the_check_math_unchanged(project, capsys):
     assert rc_on == rc_off == 0
     assert on == off
     assert on["worst_case"] == 15.0  # nothing spent, 2 slots in flight and this run, at $5
+
+
+# --- 9. --preflight: a model job that stopped before its model step ---------
+#
+# Live, nik190799/backroom, 2026-10-03: an empty ANTHROPIC_API_KEY secret
+# failed three spec runs before the model was called, and each was booked
+# at the full $2 cap, which used up the $6 day. The workflow's key check now
+# fails the job first and says so in a job output; only then is the attempt
+# booked at $0. Every other run with no known cost keeps the cap.
+
+
+def _preflight(project: Path, *extra: str, run_id: str = "100") -> int:
+    return _record(project, "--outcome", "failure", "--dod", "skipped",
+                   "--preflight", "no-key", *extra, run_id=run_id)
+
+
+def test_preflight_no_key_books_zero(project, capsys):
+    assert _preflight(project) == 0
+    assert _read_record(project) == {
+        "issue": 7,
+        "run_id": "100",
+        "run_attempt": 1,
+        "outcome": "failure",
+        "dod": "skipped",
+        "total_cost_usd": 0.0,
+        "booked_usd": 0.0,
+        "cost_source": "preflight:no-key",
+        "num_turns": 0,
+        "per_run_cap_usd": 5.0,
+        "recorded_at": "2026-10-01T12:00:00Z",
+    }
+    err = capsys.readouterr().err
+    assert "stopped at its preflight check (no-key)" in err and "booked $0.00" in err
+    assert "booked the full per-run cap" not in err
+
+
+def test_preflight_keeps_stage_and_base_sha(project):
+    assert _preflight(project, "--stage", "build", "--base-sha", BASE_SHA) == 0
+    record = _read_record(project)
+    assert record["stage"] == "build" and record["base_sha"] == BASE_SHA
+    assert record["booked_usd"] == 0.0
+
+
+def test_preflight_learn_record_books_zero_under_the_learn_cap(project):
+    (project / ".cadence" / "factory.yaml").write_text(LEARN_CONFIG, encoding="utf-8")
+    rc = _main(
+        project,
+        "record",
+        "--stage", "learn",
+        "--run-id", "l7",
+        "--run-attempt", "1",
+        "--outcome", "failure",
+        "--dod", "skipped",
+        "--preflight", "no-key",
+        "--now", str(NOON),
+    )
+    assert rc == 0
+    record = _read_record(project, "l7")
+    assert record["issue"] is None and record["stage"] == "learn"
+    assert record["booked_usd"] == 0.0 and record["cost_source"] == "preflight:no-key"
+    assert record["per_run_cap_usd"] == 0.5
+
+
+@pytest.mark.parametrize("outcome", ["failure", "cancelled", "timeout", "success"])
+def test_without_preflight_an_unreported_run_still_books_the_cap(project, outcome):
+    assert _record(project, "--outcome", outcome, "--dod", "skipped") == 0
+    record = _read_record(project)
+    assert record["cost_source"] == "cap" and record["booked_usd"] == 5.0
+
+
+@pytest.mark.parametrize("outcome", ["success", "cancelled", "timeout"])
+def test_preflight_needs_a_failed_job(project, capsys, outcome):
+    assert _record(project, "--outcome", outcome, "--preflight", "no-key") == 2
+    assert "--outcome must be failure" in capsys.readouterr().err
+    assert not _records(project).exists() or not any(_records(project).iterdir())
+
+
+@pytest.mark.parametrize(
+    "extra,needle",
+    [
+        (["--cost-usd", "0"], "no cost or turns"),
+        (["--cost-usd", "1.5"], "no cost or turns"),
+        (["--turns", "0"], "no cost or turns"),
+        (["--result-json", "RESULT"], "no --result-json"),
+        (["--result-json", "MISSING"], "no --result-json"),
+        (["--pr", "3"], "published nothing"),
+        (["--published-sha", PUB_SHA], "published nothing"),
+    ],
+)
+def test_preflight_takes_no_cost_and_publishes_nothing(project, tmp_path, capsys, extra, needle):
+    result = tmp_path / "result.json"
+    result.write_text(json.dumps({"total_cost_usd": 0.4, "num_turns": 3}), encoding="utf-8")
+    paths = {"RESULT": str(result), "MISSING": str(tmp_path / "absent.json")}
+    extra = [paths.get(arg, arg) for arg in extra]
+    assert _preflight(project, *extra) == 2
+    assert needle in capsys.readouterr().err
+    assert not _records(project).exists() or not any(_records(project).iterdir())
+
+
+@pytest.mark.parametrize("reason", ["", "No-Key", "no_key", "no-key ", "cap", "reported", "key"])
+def test_preflight_reason_is_a_fixed_word(project, reason):
+    with pytest.raises(SystemExit) as exc_info:
+        _record(project, "--outcome", "failure", "--preflight", reason)
+    assert exc_info.value.code == 2
+    assert not _records(project).exists()
+
+
+def test_build_record_refuses_an_unknown_preflight():
+    config = ledger.validate_config({"budget": {"per_run_usd": 5, "daily_usd": 25}})
+    usage = ledger.ReportedUsage(total_cost_usd=None, num_turns=None)
+    common = dict(config=config, run_id="1", run_attempt=1, issue=7, dod="skipped",
+                  usage=usage, now=NOON)
+    with pytest.raises(ledger.LedgerError, match="preflight must be one of no-key"):
+        ledger.build_record(outcome="failure", preflight="other", **common)
+    with pytest.raises(ledger.LedgerError, match="--outcome must be failure"):
+        ledger.build_record(outcome="success", preflight="no-key", **common)
+    record = ledger.build_record(outcome="failure", preflight="no-key", **common)
+    assert record["booked_usd"] == 0.0 and record["cost_source"] == "preflight:no-key"
+    assert ledger.build_record(outcome="failure", **common)["cost_source"] == "cap"
+
+
+def test_check_counts_a_preflight_record_as_zero(project, capsys):
+    assert _preflight(project, run_id="p1") == 0
+    assert _preflight(project, run_id="p2") == 0
+    assert _preflight(project, run_id="p3") == 0
+    rc, report = _check(project, capsys)
+    assert rc == 0 and report["spent_today"] == 0.0 and report["worst_case"] == 5.0
+    # An unreported failure without the preflight word still books the cap.
+    assert _record(project, "--outcome", "failure", run_id="f1") == 0
+    rc, report = _check(project, capsys)
+    assert report["spent_today"] == 5.0

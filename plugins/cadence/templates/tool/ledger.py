@@ -46,8 +46,9 @@ Records (``--records-dir``, default ``.cadence/runs``):
     One JSON file per run attempt, ``<run_id>-<run_attempt>.json``,
     created with exclusive create so a record is never overwritten. Each
     holds: issue, run_id, run_attempt, outcome, dod, total_cost_usd
-    (number or null), booked_usd, cost_source ("reported" or "cap"),
-    num_turns (or null), per_run_cap_usd, recorded_at (ISO 8601 UTC,
+    (number or null), booked_usd, cost_source ("reported", "cap" or
+    "preflight:<reason>", see --preflight), num_turns (or null),
+    per_run_cap_usd, recorded_at (ISO 8601 UTC,
     whole seconds) and, only when a reported cost exceeds the cap,
     ``"over_cap": true``. ``--stage``, ``--pr``, ``--published-sha`` and
     ``--base-sha`` add ``stage``, ``pr``, ``published_sha`` and
@@ -64,7 +65,16 @@ Contract:
             cost is booked at the full per-run cap, never at zero (for a
             ``--stage learn`` record, ``learning.budget.per_run_usd``,
             the cap its model step ran under). A reported cost above the
-            cap is booked as reported.
+            cap is booked as reported. The one exception is
+            ``--preflight no-key``: the model job failed at its key check
+            (the ANTHROPIC_API_KEY secret missing or empty), before its
+            model step, so nothing was spent. It books $0 with
+            ``cost_source`` ``"preflight:no-key"``, ``total_cost_usd`` 0
+            and ``num_turns`` 0, and only with ``--outcome failure``,
+            never with ``--cost-usd``, ``--turns``, ``--result-json``,
+            ``--pr`` or ``--published-sha`` (exit 2). The workflow passes
+            it only on the model job's own ``preflight`` output, which
+            the check writes before any model or agent code runs.
     check   Before dispatching a run, print
             ``{spent_today, in_flight, per_run_usd, daily_usd,
             worst_case, allowed, unreadable}`` where
@@ -100,6 +110,8 @@ Usage:
         --outcome timeout
     python tool/ledger.py record --stage learn --run-id 130 --run-attempt 1 \\
         --outcome success --dod skipped --result-json claude-result.json
+    python tool/ledger.py record --run-id 124 --run-attempt 1 --issue 42 \\
+        --outcome failure --dod skipped --preflight no-key
     python tool/ledger.py check --pool learn --in-flight 1
     python tool/ledger.py --config .cadence/factory.yaml \\
         --records-dir .cadence/runs check --now 1790000000
@@ -143,6 +155,10 @@ DOD_RESULTS: tuple[str, ...] = ("pass", "fail", "skipped", "unknown")
 STAGES: tuple[str, ...] = ("spec", "build", "learn")
 POOLS: tuple[str, ...] = ("build", "learn")
 STAGE_LEARN = "learn"
+# Why a model job stopped at its preflight check, before its model step ran
+# (``--preflight``): booked at $0 as cost_source "preflight:<reason>".
+# no-key: the ANTHROPIC_API_KEY secret was missing, empty or held whitespace.
+PREFLIGHT_REASONS: tuple[str, ...] = ("no-key",)
 
 LEARNING_MODES: tuple[str, ...] = ("observe", "on", "eval-sandbox")
 DEFAULT_GUARDED_PATHS: tuple[str, ...] = (
@@ -803,6 +819,7 @@ def build_record(
     pr: int | None = None,
     published_sha: str | None = None,
     base_sha: str | None = None,
+    preflight: str | None = None,
 ) -> dict[str, Any]:
     if outcome not in OUTCOMES:
         raise LedgerError(f"outcome must be one of {', '.join(OUTCOMES)}")
@@ -830,6 +847,32 @@ def build_record(
     # global daily budget.
     cap = config.learning.per_run_usd if stage == STAGE_LEARN else config.per_run_usd
     cost = usage.total_cost_usd
+    turns = usage.num_turns
+    if cost is None:
+        booked, source = cap, "cap"
+    else:
+        booked, source = cost, "reported"
+    if preflight is not None:
+        # The model job stopped at its preflight check, before the model
+        # step: nothing was spent. Every other run with no known cost keeps
+        # the cap (that pessimism is deliberate), so this is narrow: a
+        # failed job, no cost or turns from anywhere, nothing published.
+        if preflight not in PREFLIGHT_REASONS:
+            raise LedgerError(
+                f"preflight must be one of {', '.join(PREFLIGHT_REASONS)} (got {preflight!r})"
+            )
+        if outcome != "failure":
+            raise LedgerError(
+                "--preflight books a model job that failed at its preflight check: "
+                f"--outcome must be failure (got {outcome})"
+            )
+        if cost is not None or turns is not None:
+            raise LedgerError(
+                "--preflight takes no cost or turns: the model step never ran"
+            )
+        if pr is not None or published_sha is not None:
+            raise LedgerError("--preflight: a model job that never ran published nothing")
+        cost, turns, booked, source = 0.0, 0, 0.0, f"preflight:{preflight}"
     record: dict[str, Any] = {
         "issue": issue,
         "run_id": run_id,
@@ -837,9 +880,9 @@ def build_record(
         "outcome": outcome,
         "dod": dod,
         "total_cost_usd": cost,
-        "booked_usd": cap if cost is None else cost,
-        "cost_source": "cap" if cost is None else "reported",
-        "num_turns": usage.num_turns,
+        "booked_usd": booked,
+        "cost_source": source,
+        "num_turns": turns,
         "per_run_cap_usd": cap,
         "recorded_at": iso_utc(to_utc(now)),
     }
@@ -1087,6 +1130,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--turns", type=_count, help="turns used; overrides --result-json"
     )
     rec.add_argument(
+        "--preflight",
+        choices=PREFLIGHT_REASONS,
+        help="the model job failed at this preflight check, before its model "
+        "step (no-key: ANTHROPIC_API_KEY missing or empty): book $0. Needs "
+        "--outcome failure; refused with any cost, turns, result, PR or "
+        "published sha",
+    )
+    rec.add_argument(
         "--now", type=_finite_float, help="epoch seconds (default: current time)"
     )
 
@@ -1115,6 +1166,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
+    if args.preflight is not None and args.result_json is not None:
+        # Not even read: a result file means a model step ran.
+        raise LedgerError("--preflight takes no --result-json: the model step never ran")
     usage = ReportedUsage(total_cost_usd=args.cost_usd, num_turns=args.turns)
     if args.result_json is not None and (
         usage.total_cost_usd is None or usage.num_turns is None
@@ -1144,9 +1198,16 @@ def _cmd_record(args: argparse.Namespace, config: Config, now: float) -> int:
         pr=args.pr,
         published_sha=args.published_sha,
         base_sha=args.base_sha,
+        preflight=args.preflight,
     )
     path = write_record(args.records_dir, record)
 
+    if args.preflight is not None:
+        print(
+            f"NOTE: run {args.run_id} attempt {args.run_attempt} stopped at its "
+            f"preflight check ({args.preflight}) before the model step; booked $0.00",
+            file=sys.stderr,
+        )
     if record["cost_source"] == "cap":
         print(
             f"WARN: no cost reported for run {args.run_id} attempt "

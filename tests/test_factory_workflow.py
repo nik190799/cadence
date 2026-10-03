@@ -61,6 +61,21 @@ The learn chain also runs in a build run once ledger has booked it (the
 hourly schedule fires only every few hours), and still never in a spec run
 or on any other event.
 
+The Anthropic key check (live, nik190799/backroom, 2026-10-03: an empty
+secret failed three spec runs before the model was called, each was booked
+at the full cap, and the issue got no word):
+
+- intake, agent, agent-retry and classify run one identical first step that
+  reads the secret from env only, looks at its length and whether it holds
+  whitespace, never prints it, and writes key=missing before failing
+- the model step runs only on key=ok; the job output `preflight` is no-key
+  only for a failed check whose model step never ran (tier A)
+- ledger and learn-record book $0 (cost_source preflight:no-key) on that
+  output alone, with a failed job and no result file; every other
+  unreported cost keeps the cap
+- publish says so once on the issue, with fixed text, and labels it
+  needs-human, in the spec stage too
+
 And every `uses:` in both workflow templates is pinned to a commit SHA.
 """
 
@@ -765,9 +780,11 @@ def _run_script(
     *,
     stub_gh: str | None = None,
     cwd: Path | None = None,
+    unset: tuple[str, ...] = (),
 ) -> tuple[subprocess.CompletedProcess, dict[str, list[str]]]:
     """Run a step's script as the workflow does (bash -eo pipefail) and
-    return the process and what it wrote to GITHUB_OUTPUT (key -> values)."""
+    return the process and what it wrote to GITHUB_OUTPUT (key -> values).
+    ``unset`` names variables to take out of the inherited environment."""
     out = tmp_path / "github_output"
     out.write_text("", encoding="utf-8")
     path = env.get("PATH", os.environ["PATH"])
@@ -779,10 +796,12 @@ def _run_script(
         path = f"{stub}{os.pathsep}{path}"
     file = tmp_path / "step.sh"
     file.write_text(script, encoding="utf-8", newline="\n")
+    full = {**os.environ, **env, "PATH": path, "GITHUB_OUTPUT": out.as_posix()}
+    for name in unset:
+        full.pop(name, None)
     proc = subprocess.run(
         [BASH, "--noprofile", "--norc", "-eo", "pipefail", file.as_posix()],
-        env={**os.environ, **env, "PATH": path, "GITHUB_OUTPUT": out.as_posix()},
-        cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+        env=full, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
     )
     outputs: dict[str, list[str]] = {}
     for line in out.read_text(encoding="utf-8").splitlines():
@@ -3143,3 +3162,521 @@ def test_learn_record_books_classify_beside_the_builds_own_record(tmp_path: Path
     assert record["run_id"] == "42.learn" and record["stage"] == "learn"
     assert record["booked_usd"] == 0.12 and record["issue"] is None
     assert build_record.read_text(encoding="utf-8") == "{}\n"
+
+
+# ---- the Anthropic key check (live, nik190799/backroom, 2026-10-03) ----
+#
+# The ANTHROPIC_API_KEY secret existed but was empty. Three spec runs failed
+# inside claude-code-action without calling the model, ledger booked each
+# at the full per-run cap ($6, the whole day), the first real build was
+# refused, and the issue got no word. Every model job now checks the key
+# first, from env only, reading its length and whether it holds whitespace;
+# a failed check is booked at $0 (and only that case), and publish explains
+# it once on the issue.
+
+MODEL_JOBS = ("intake", "agent", "agent-retry", "classify")
+KEY_STEP = "Check the Anthropic key is set"
+KEY_REPORT = "Report the missing Anthropic key"
+PREFLIGHT_OUTPUT = (
+    "${{ steps.key.outcome == 'failure' && steps.key.outputs.key == 'missing' && "
+    "steps.claude.outcome == 'skipped' && 'no-key' || '' }}"
+)
+# Every line of the check that touches the key: its emptiness, its length,
+# whether it holds whitespace. Nothing echoes, compares or writes it.
+KEY_REFERENCES = [
+    'if [ -z "${ANTHROPIC_API_KEY:-}" ]; then',
+    "n=${#ANTHROPIC_API_KEY}",
+    'if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]] ]]; then',
+]
+GOOD_KEY = "sk-ant-api03-" + "Zr8vK2pLq9" * 10  # fake: the shape only, never a real key
+
+
+def _key_script() -> str:
+    return _step(JOBS["intake"], KEY_STEP)["run"]
+
+
+def _leaked(value: str, printed: str, width: int = 5) -> list[str]:
+    """Every run of ``width`` characters of the key that shows in the output."""
+    return sorted({
+        value[i:i + width] for i in range(len(value) - width + 1) if value[i:i + width] in printed
+    })
+
+
+@pytest.mark.parametrize("name", MODEL_JOBS)
+def test_every_model_job_checks_the_key_before_the_model_step(name: str) -> None:
+    job = JOBS[name]
+    steps = job["steps"]
+    names = [s.get("name") for s in steps]
+    model_at = next(
+        i for i, s in enumerate(steps)
+        if s.get("uses", "").startswith("anthropics/claude-code-action@")
+    )
+    # First: before the checkout, the plugin fetch and the model step.
+    assert names.index(KEY_STEP) == 0 < model_at
+    key = steps[0]
+    assert key["id"] == "key"
+    assert "if" not in key and "continue-on-error" not in key
+    # The secret reaches the script through env only, and nothing else does.
+    assert key["env"] == {"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}
+    assert "${{" not in key["run"]
+    model = steps[model_at]
+    assert model["id"] == "claude"
+    assert model["if"] == "steps.key.outputs.key == 'ok'"
+    assert model["with"]["anthropic_api_key"] == "${{ secrets.ANTHROPIC_API_KEY }}"
+    holders = [s.get("name") for s in steps if "secrets." in _dump(s)]
+    assert holders == [KEY_STEP, model.get("name")]
+    # Nothing up to the model step runs after a failed check, and what runs
+    # anyway (always()) only keeps the result for the ledger.
+    for step in steps[1:model_at + 1]:
+        assert not _STATUS_FN.search(str(step.get("if", ""))), step.get("name") or step.get("uses")
+    for step in steps:
+        if _STATUS_FN.search(str(step.get("if", ""))):
+            assert step.get("name", "").startswith("Keep the") or step.get("uses", "").startswith(
+                "actions/upload-artifact@"
+            ), step.get("name")
+    assert job["outputs"]["preflight"] == PREFLIGHT_OUTPUT
+
+
+def test_the_key_check_is_one_step_byte_for_byte() -> None:
+    assert len({_dump(_step(JOBS[name], KEY_STEP)) for name in MODEL_JOBS}) == 1
+    holders = {
+        name for name, job in JOBS.items()
+        if any(s.get("name") == KEY_STEP for s in job.get("steps", []))
+    }
+    assert holders == set(MODEL_JOBS)
+    # The model jobs are exactly these (test_the_retry_is_bounded_to_one_more_model_run).
+    model_jobs = {n for n, j in JOBS.items() if "anthropics/claude-code-action" in _dump(j)}
+    assert model_jobs == set(MODEL_JOBS)
+
+
+def test_the_key_check_reads_only_the_length_and_whitespace() -> None:
+    run = _key_script()
+    touching = [
+        line.strip() for line in run.splitlines() if re.search(r"\$\{?#?ANTHROPIC_API_KEY", line)
+    ]
+    assert touching == KEY_REFERENCES
+    for forbidden in ("set -x", "printenv", "env |", "declare -p", "export -p", "%q"):
+        assert forbidden not in run, forbidden
+    # key=missing is written before the step fails, by one function.
+    lines = run.splitlines()
+    start = lines.index("missing() {")
+    body = lines[start:lines.index("}", start)]
+    assert body[1].strip() == 'echo "key=missing" >> "$GITHUB_OUTPUT"'
+    assert body[-1].strip() == "exit 1"
+    error = body[2].strip()
+    assert error.startswith('echo "::error title=ANTHROPIC_API_KEY is not usable::$1 ')
+    assert "gh secret set ANTHROPIC_API_KEY --repo $GITHUB_REPOSITORY" in error
+    assert "checked only by its length" in error
+    assert run.count("exit 1") == 1 and run.count('missing "') == 2
+    assert run.rstrip().splitlines()[-2].strip() == 'echo "key=ok" >> "$GITHUB_OUTPUT"'
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("value", "why"),
+    [
+        (None, "missing or empty (length 0)"),
+        ("", "missing or empty (length 0)"),
+        ("  ", "holds whitespace"),
+        ("sk-ant-x y", "holds whitespace"),
+        (GOOD_KEY + "\n", "holds whitespace"),
+        ("\t" + GOOD_KEY, "holds whitespace"),
+    ],
+    ids=["unset", "empty", "spaces", "a space inside", "a trailing newline", "a leading tab"],
+)
+def test_the_key_check_fails_on_a_missing_empty_or_spaced_key(
+    tmp_path: Path, value: str | None, why: str
+) -> None:
+    env = {"GITHUB_REPOSITORY": "owner/repo"}
+    if value is not None:
+        env["ANTHROPIC_API_KEY"] = value
+    proc, out = _run_script(
+        tmp_path, _key_script(), env, unset=("ANTHROPIC_API_KEY",) if value is None else ()
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert out == {"key": ["missing"]}
+    printed = proc.stdout + proc.stderr
+    assert "::error title=ANTHROPIC_API_KEY is not usable::" in printed
+    assert why in printed
+    assert "gh secret set ANTHROPIC_API_KEY --repo owner/repo" in printed
+    assert "checked only by its length" in printed
+    assert "nothing was spent" in printed
+    if value and value.strip():
+        assert _leaked(value.strip(), printed) == []
+        assert f"(length {len(value)})" in printed
+
+
+@needs_shell
+def test_the_key_check_passes_a_key_and_prints_only_its_length(tmp_path: Path) -> None:
+    proc, out = _run_script(
+        tmp_path, _key_script(), {"GITHUB_REPOSITORY": "owner/repo", "ANTHROPIC_API_KEY": GOOD_KEY}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert out == {"key": ["ok"]}
+    printed = proc.stdout + proc.stderr
+    assert printed == f"ANTHROPIC_API_KEY is set: {len(GOOD_KEY)} characters, no whitespace.\n"
+    assert _leaked(GOOD_KEY, printed) == []
+
+
+def _model_ctx() -> dict:
+    return {
+        "github": APPROVE, "inputs": {}, "vars": {"CADENCE_BOT_LOGIN": "app[bot]"},
+        "needs": {"route": {"result": "success", "outputs": {"issue": "7"}}},
+        "__status__": {"success": True, "failure": False, "cancelled": False},
+    }
+
+
+@pytest.mark.parametrize("name", MODEL_JOBS)
+@pytest.mark.parametrize(
+    ("scenario", "result", "preflight"),
+    [
+        ("the key is missing", "failure", "no-key"),
+        ("the key is set and the model runs", "success", ""),
+        ("the key is set and the model fails", "failure", ""),
+        ("the model step writes key=missing itself", "failure", ""),
+        ("the check crashes before writing", "failure", ""),
+        ("the check passes but writes key=missing", "success", ""),
+        ("the run is cancelled during the check", "cancelled", ""),
+        ("a step before the model fails", "failure", ""),
+    ],
+)
+def test_only_a_failed_key_check_yields_preflight_no_key(
+    name: str, scenario: str, result: str, preflight: str
+) -> None:
+    """The job output is tier A: the check's outcome (the runner sets it from
+    the exit code), the key=missing it writes before any model or agent code
+    runs, and the model step's outcome (skipped). A job that failed for any
+    other reason, or a model step that writes key=missing to its own
+    GITHUB_OUTPUT, never yields no-key."""
+    first_other = next(
+        s for s in JOBS[name]["steps"][1:] if s.get("id") != "claude" and "if" not in s
+    )
+
+    def behave(step: dict, ctx: dict) -> tuple[str, dict]:
+        if step.get("id") == "key":
+            return {
+                "the key is missing": ("failure", {"key": "missing"}),
+                "the check crashes before writing": ("failure", {}),
+                "the check passes but writes key=missing": ("success", {"key": "missing"}),
+                "the run is cancelled during the check": ("cancelled", {"key": "missing"}),
+            }.get(scenario, ("success", {"key": "ok"}))
+        if step.get("id") == "claude":
+            if scenario == "the key is set and the model fails":
+                return "failure", {}
+            if scenario == "the model step writes key=missing itself":
+                return "failure", {"key": "missing", "preflight": "no-key"}
+            return "success", {}
+        if step is first_other and scenario == "a step before the model fails":
+            return "failure", {}
+        return "success", {}
+
+    got, outputs, ran = _simulate_steps(name, _model_ctx(), behave)
+    assert (got, outputs["preflight"]) == (result, preflight)
+    model = _uses(JOBS[name], "anthropics/claude-code-action")["name"]
+    if scenario in ("the key is missing", "the check crashes before writing"):
+        assert ran[0] == KEY_STEP and model not in ran
+        assert all(r.startswith(("Keep the", "actions/upload-artifact")) for r in ran[1:]), ran
+
+
+# -- the ledger: $0 for a failed key check, and only for that --
+
+KEY_RECORDS = [
+    # step, stage, the result and preflight variables it reads, its record
+    ("Record the run", "build", "AGENT_RESULT", "AGENT_PREFLIGHT", "42-1.json"),
+    ("Record the run", "spec", "INTAKE_RESULT", "INTAKE_PREFLIGHT", "42-1.json"),
+    ("Record the retry", "build", "AGENT_RETRY_RESULT", "AGENT_RETRY_PREFLIGHT",
+     "42.retry1-1.json"),
+]
+
+
+def test_ledger_reads_each_model_jobs_own_preflight_output() -> None:
+    env = JOBS["ledger"]["env"]
+    assert env["INTAKE_PREFLIGHT"] == "${{ needs.intake.outputs.preflight }}"
+    assert env["AGENT_PREFLIGHT"] == "${{ needs.agent.outputs.preflight }}"
+    assert env["AGENT_RETRY_PREFLIGHT"] == "${{ needs.agent-retry.outputs.preflight }}"
+    assert JOBS["learn-record"]["env"]["CLASSIFY_PREFLIGHT"] == (
+        "${{ needs.classify.outputs.preflight }}"
+    )
+    for job, step in (("ledger", "Record the run"), ("ledger", "Record the retry"),
+                      ("learn-record", "Record the classify spend")):
+        run = _step(JOBS[job], step)["run"]
+        # After a re-run and a result file, never ahead of them, and only as
+        # this exact flag on a failed job.
+        assert run.count("--preflight") == 1 and "cost_args=(--preflight no-key)" in run
+        assert run.index("claude-result.json") < run.index("--preflight")
+        assert '[ "$outcome" = "failure" ]' in run
+
+
+def _key_ledger(
+    tmp_path: Path, step: str, stage: str, *, keep_result: bool = False, **env: str
+) -> dict:
+    """Run one of ledger's record steps on a run whose model step never ran
+    (the result artifacts hold run_attempt only, unless ``keep_result``)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    work, runner, base = _ledger_world(tmp_path)
+    if not keep_result:
+        for name in ("cadence-result", "cadence-result-retry"):
+            (runner / name / "claude-result.json").unlink()
+    base = {**base, "STAGE": stage, "VERIFY_RESULT": "skipped", "VERIFY_VERDICT": "",
+            "VERIFY_RETRY_RESULT": "skipped", "VERIFY_RETRY_VERDICT": "", "PUB_TRY": "",
+            "PR": "", "PUB": "", "INTAKE_RESULT": "skipped", "AGENT_RESULT": "skipped",
+            "AGENT_RETRY_RESULT": "skipped"}
+    proc, _ = _run_script(tmp_path, _step(JOBS["ledger"], step)["run"], {**base, **env}, cwd=work)
+    assert proc.returncode == 0, proc.stderr
+    return {
+        p.name: json.loads(p.read_text(encoding="utf-8"))
+        for p in (runner / "staged" / "runs").glob("*.json")
+    }
+
+
+@needs_shell
+@pytest.mark.parametrize(("step", "stage", "result_var", "preflight_var", "record"), KEY_RECORDS)
+def test_ledger_books_a_failed_key_check_at_zero(
+    tmp_path: Path, step: str, stage: str, result_var: str, preflight_var: str, record: str
+) -> None:
+    booked = _key_ledger(tmp_path, step, stage, **{result_var: "failure", preflight_var: "no-key"})
+    rec = booked[record]
+    assert rec["outcome"] == "failure" and rec["dod"] == "skipped" and rec["stage"] == stage
+    assert rec["booked_usd"] == 0.0 and rec["total_cost_usd"] == 0.0 and rec["num_turns"] == 0
+    assert rec["cost_source"] == "preflight:no-key"
+    assert rec["per_run_cap_usd"] == 5.0
+
+
+@needs_shell
+@pytest.mark.parametrize(("step", "stage", "result_var", "preflight_var", "record"), KEY_RECORDS)
+@pytest.mark.parametrize(
+    ("result", "preflight", "keep_result", "source"),
+    [
+        ("failure", "", False, "cap"),              # any other failure: the cap
+        ("cancelled", "no-key", False, "cap"),      # only a failed job
+        ("success", "no-key", False, "cap"),
+        ("failure", "NO-KEY", False, "cap"),        # only the exact word
+        ("failure", "no-key ", False, "cap"),
+        ("failure", "no-key\nx", False, "cap"),
+        ("failure", "other", False, "cap"),
+        ("failure", "no-key", True, "reported"),    # a result means a model step ran
+    ],
+)
+def test_no_other_unreported_failure_is_booked_at_zero(
+    tmp_path: Path, step: str, stage: str, result_var: str, preflight_var: str, record: str,
+    result: str, preflight: str, keep_result: bool, source: str,
+) -> None:
+    rec = _key_ledger(
+        tmp_path, step, stage, keep_result=keep_result,
+        **{result_var: result, preflight_var: preflight},
+    )[record]
+    reported = 2.5 if "retry" in record else 1.25  # _ledger_world's result files
+    assert (rec["cost_source"], rec["booked_usd"]) == (
+        source, reported if source == "reported" else 5.0
+    )
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("stage", "env"),
+    [
+        # Another model job's output never books this one.
+        ("spec", {"INTAKE_RESULT": "failure", "AGENT_PREFLIGHT": "no-key"}),
+        ("build", {"AGENT_RESULT": "failure", "INTAKE_PREFLIGHT": "no-key"}),
+        ("build", {"AGENT_RESULT": "failure", "AGENT_RETRY_PREFLIGHT": "no-key"}),
+    ],
+)
+def test_ledger_never_books_one_job_on_anothers_key_check(
+    tmp_path: Path, stage: str, env: dict[str, str]
+) -> None:
+    rec = _key_ledger(tmp_path, "Record the run", stage, **env)["42-1.json"]
+    assert (rec["cost_source"], rec["booked_usd"]) == ("cap", 5.0)
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("result", "preflight", "source", "usd"),
+    [
+        ("failure", "no-key", "preflight:no-key", 0.0),
+        ("failure", "", "cap", 0.25),       # learning.budget.per_run_usd, not the build cap
+        ("cancelled", "no-key", "cap", 0.25),
+        ("success", "no-key", "cap", 0.25),
+    ],
+)
+def test_learn_record_books_a_failed_classify_key_check_at_zero(
+    tmp_path: Path, result: str, preflight: str, source: str, usd: float
+) -> None:
+    work, runner, env = _ledger_world(tmp_path)
+    (runner / "classify").mkdir()
+    (runner / "classify" / "run_attempt").write_text("1\n", encoding="utf-8")  # no result
+    step = _step(JOBS["learn-record"], "Record the classify spend")
+    proc, _ = _run_script(
+        tmp_path, step["run"],
+        {**env, "CLASSIFY_RESULT": result, "CLASSIFY_PREFLIGHT": preflight}, cwd=work,
+    )
+    assert proc.returncode == 0, proc.stderr
+    rec = json.loads(
+        (runner / "harvest" / "staged" / "runs" / "42.learn-1.json").read_text(encoding="utf-8")
+    )
+    assert rec["stage"] == "learn" and rec["issue"] is None
+    assert (rec["cost_source"], rec["booked_usd"]) == (source, usd)
+    assert rec["per_run_cap_usd"] == 0.25
+    warned = "::warning title=classify did not run::" in proc.stdout
+    assert warned == (source == "preflight:no-key")
+
+
+# -- publish: one fixed comment, needs-human --
+
+
+def test_publish_runs_on_a_failed_intake_key_check_only() -> None:
+    cond = " ".join(JOBS["publish"]["if"].split())
+    assert (
+        "(needs.intake.result == 'success' || needs.intake.outputs.preflight == 'no-key')" in cond
+    )
+    names = _step_names("publish")
+    report_at, pick_at = names.index(KEY_REPORT), names.index(PICK)
+    assert report_at < pick_at  # never read as a step of a published attempt
+    report = JOBS["publish"]["steps"][report_at]
+    assert report["if"] == (
+        "needs.intake.outputs.preflight == 'no-key' || needs.agent.outputs.preflight == 'no-key'"
+    )
+    assert report["env"] == {"STAGE": "${{ needs.route.outputs.stage }}"}
+    assert "${{" not in report["run"]
+    # The spec is posted only from an intake that succeeded.
+    for step in JOBS["publish"]["steps"][:report_at]:
+        assert step["if"] == (
+            "needs.route.outputs.stage == 'spec' && needs.intake.result == 'success'"
+        )
+    agent = _step(JOBS["publish"], "Report the agent failure")
+    assert "needs.agent.outputs.preflight != 'no-key'" in agent["if"]
+    dod = _step(JOBS["publish"], REPORT)
+    assert dod["env"]["AGENT_RETRY_PREFLIGHT"] == "${{ needs.agent-retry.outputs.preflight }}"
+
+
+def _missing_key_run(tmp: Path, github: dict, jobs: dict) -> tuple[dict, str, str, dict]:
+    """A run whose model job ended as given, with publish's and ledger's own
+    scripts and no result file (the model never ran). Returns the jobs, the
+    issue comment, the gh calls and the booked records."""
+    capture, gh_log = tmp / "comment.md", tmp / "gh.log"
+    world = tmp / "ledger"
+    world.mkdir(parents=True)
+    work, ledger_runner, ledger_env = _ledger_world(world)
+    for name in ("cadence-result", "cadence-result-retry"):
+        (ledger_runner / name / "claude-result.json").unlink()
+    booked: dict = {}
+    allowed = (KEY_REPORT, PICK, "Report the agent failure")
+
+    def publish(ctx: dict):
+        runner = tmp / "publish-runner"
+        runner.mkdir(exist_ok=True)
+        extra = {"RUNNER_TEMP": runner.as_posix(), "GITHUB_REPOSITORY": "owner/repo",
+                 "GITHUB_RUN_ID": "42", "CAPTURE": capture.as_posix(), "GH_LOG": gh_log.as_posix()}
+
+        def behave(step: dict, sctx: dict):
+            assert step.get("name") in allowed, step.get("name") or step.get("uses")
+            return _real(tmp / "publish", "publish", step, sctx, extra, stub_gh=REPORT_GH)
+        result, outputs, _ = _simulate_steps("publish", ctx, behave)
+        return result, outputs
+
+    def ledger(ctx: dict):
+        for name in ("Record the run", "Record the retry"):
+            step = _step(JOBS["ledger"], name)
+            env = {**ledger_env, **_step_env("ledger", step, ctx)}
+            proc, _ = _run_script(world, step["run"], env, cwd=work)
+            assert proc.returncode == 0, proc.stderr
+        for path in (ledger_runner / "staged" / "runs").glob("*.json"):
+            booked[path.name] = json.loads(path.read_text(encoding="utf-8"))
+        return "success", {}
+
+    done = _simulate_run(github, {**jobs, "publish": publish, "ledger": ledger})
+    comment = capture.read_text(encoding="utf-8") if capture.exists() else ""
+    calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+    return done, comment, calls, booked
+
+
+SPEC_ROUTE = ("success", {"stage": "spec", "issue": "7", "per_run_usd": "5", "max_turns": "60"})
+NO_KEY = ("failure", {"preflight": "no-key"})
+
+
+@needs_shell
+def test_a_spec_run_without_a_key_says_so_once_and_books_zero(tmp_path: Path) -> None:
+    """The live case: the secret is empty and someone labels an issue
+    `factory`. intake fails at its first step, publish posts one fixed
+    comment and labels the issue needs-human (no silent `factory` label for
+    the reconciler to retry), ledger books $0, and the run stays red."""
+    done, comment, calls, booked = _missing_key_run(
+        tmp_path, LABEL, {"route": SPEC_ROUTE, "intake": NO_KEY}
+    )
+    assert {"intake", "publish", "ledger"} <= _ran(done)
+    assert calls.count("issues/7/comments") == 1
+    assert "labels[]=needs-human" in calls
+    for text in (
+        "could not run: the `ANTHROPIC_API_KEY` secret of this repository is missing or empty",
+        "the model was never called. No budget was spent",
+        "gh secret set ANTHROPIC_API_KEY --repo owner/repo",
+        "checked only by its length",
+        "add the `factory` label again",
+        "https://github.com/owner/repo/actions/runs/42",
+    ):
+        assert text in comment, text
+    assert "/approve" not in comment
+    rec = booked["42-1.json"]
+    assert (rec["stage"], rec["outcome"], rec["cost_source"], rec["booked_usd"]) == (
+        "spec", "failure", "preflight:no-key", 0.0
+    )
+    assert _conclusion(done) == "failure"
+
+
+@needs_shell
+def test_a_build_without_a_key_says_so_once_and_books_zero(tmp_path: Path) -> None:
+    done, comment, calls, booked = _missing_key_run(tmp_path, APPROVE, {**BUILD, "agent": NO_KEY})
+    assert "verify" not in _ran(done) and "agent-retry" not in _ran(done)
+    assert calls.count("issues/7/comments") == 1  # not also "the build agent did not finish"
+    assert "labels[]=needs-human" in calls
+    assert "add the `spec-ready` label back and reply `/approve`" in comment
+    assert "No budget was spent" in comment
+    assert sorted(booked) == ["42-1.json"]
+    rec = booked["42-1.json"]
+    assert (rec["stage"], rec["outcome"], rec["cost_source"], rec["booked_usd"]) == (
+        "build", "failure", "preflight:no-key", 0.0
+    )
+    assert {"release", "harvest"} <= _ran(done)
+    assert _conclusion(done) == "failure"
+
+
+@needs_shell
+@pytest.mark.parametrize("stage", ["spec", "build"])
+def test_a_model_job_that_failed_otherwise_still_books_the_cap(tmp_path: Path, stage: str) -> None:
+    if stage == "spec":
+        done, comment, calls, booked = _missing_key_run(
+            tmp_path, LABEL, {"route": SPEC_ROUTE, "intake": ("failure", {})}
+        )
+        assert "publish" not in _ran(done)  # as before: the reconciler retries the spec
+        assert comment == ""
+    else:
+        done, comment, calls, booked = _missing_key_run(
+            tmp_path, APPROVE, {**BUILD, "agent": ("failure", {})}
+        )
+        assert "The build agent did not finish" in comment
+        assert "ANTHROPIC_API_KEY" not in comment
+    rec = booked["42-1.json"]
+    assert (rec["cost_source"], rec["booked_usd"]) == ("cap", 5.0)
+
+
+@needs_shell
+@pytest.mark.parametrize(
+    ("result", "preflight", "sentence"),
+    [
+        ("failure", "no-key", "the retry could not start: the `ANTHROPIC_API_KEY` secret is "
+                              "missing or empty, so the retry spent nothing"),
+        ("failure", "", "the retry agent did not finish"),
+        ("cancelled", "no-key", "the retry agent did not finish"),
+    ],
+)
+def test_the_report_says_when_the_retry_had_no_key(
+    tmp_path: Path, result: str, preflight: str, sentence: str
+) -> None:
+    """A retry whose key check failed: the first attempt ran and spent, so
+    the Definition of Done report (dod-failed) says it, not the no-key
+    comment, which would claim nothing was spent."""
+    body = _report(
+        tmp_path, FAILED_STEP="FAIL: test (exit 1)", AGENT_RETRY_RESULT=result,
+        AGENT_RETRY_PREFLIGHT=preflight, RETRY_GATE_RESULT="success", RETRY_WHY="granted",
+    )
+    assert f"Automatic retry: {sentence}" in body
+    assert "The Definition of Done gate failed at: `test`" in body

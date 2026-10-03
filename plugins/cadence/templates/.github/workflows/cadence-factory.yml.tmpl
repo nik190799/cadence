@@ -15,7 +15,12 @@
 #
 # What the repo needs:
 #   secrets    CADENCE_APP_ID, CADENCE_APP_PRIVATE_KEY  your own GitHub App
-#              ANTHROPIC_API_KEY                        your own key, with a spend limit
+#              ANTHROPIC_API_KEY                        your own key, with a spend limit.
+#                                  Every model job checks it first ("Check the
+#                                  Anthropic key is set": length and whitespace
+#                                  only, never the value); a missing or empty key
+#                                  stops the job before any spend, books $0 and
+#                                  is explained on the issue (needs-human).
 #   variables  CADENCE_BOT_LOGIN   '<app-slug>[bot]': the App's identity for
 #                                  route.py's loop guard and claude-code-action's
 #                                  allowed_bots (runs the App dispatches)
@@ -541,10 +546,48 @@ jobs:
     permissions:
       contents: read # checkout
       issues: read   # fetch the issue text
+    outputs:
+      # no-key when the key check failed, so the model step never ran and
+      # nothing was spent: ledger books the attempt at $0 and publish says
+      # why on the issue. Tier A: the check is the job's first step and
+      # writes key=missing before any model or agent code runs, and this
+      # reads it only together with that step's outcome and the model
+      # step's. The same expression in every model job (tests check it).
+      preflight: ${{ steps.key.outcome == 'failure' && steps.key.outputs.key == 'missing' && steps.claude.outcome == 'skipped' && 'no-key' || '' }}
     env:
       ISSUE: ${{ needs.route.outputs.issue }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # First, before anything that spends. Seen live (nik190799/backroom,
+      # 2026-10-03): an ANTHROPIC_API_KEY secret that existed but was empty
+      # failed inside claude-code-action, and ledger booked each such run at
+      # the full per-run cap. The secret reaches this script through env
+      # only, and only its length and whether it holds whitespace are read:
+      # the value is never printed, compared or written. key=missing is
+      # written before the step fails. The same step, byte for byte, in
+      # intake, agent, agent-retry and classify (tests check it).
+      - name: Check the Anthropic key is set
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Its length and whether it holds whitespace: nothing else of the
+          # key is read, and it is never echoed, compared or written.
+          missing() {
+            echo "key=missing" >> "$GITHUB_OUTPUT"
+            echo "::error title=ANTHROPIC_API_KEY is not usable::$1 The model was not called and nothing was spent. To fix it, a maintainer runs 'gh secret set ANTHROPIC_API_KEY --repo $GITHUB_REPOSITORY' in their own terminal and pastes the key at the prompt. GitHub never shows a secret's value, so it can be checked only by its length, which this step prints: an Anthropic API key is about 100 characters, with no spaces or line breaks."
+            exit 1
+          }
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            missing "The ANTHROPIC_API_KEY secret is missing or empty (length 0)."
+          fi
+          n=${#ANTHROPIC_API_KEY}
+          if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]] ]]; then
+            missing "The ANTHROPIC_API_KEY secret holds whitespace, such as a line break pasted with the key (length $n)."
+          fi
+          echo "key=ok" >> "$GITHUB_OUTPUT"
+          echo "ANTHROPIC_API_KEY is set: $n characters, no whitespace."
+
       - name: Check the issue number
         run: |
           [[ "$ISSUE" =~ ^[1-9][0-9]{0,9}$ ]] || { echo "::error::route gave no issue number"; exit 1; }
@@ -600,6 +643,7 @@ jobs:
 
       - name: Write the spec
         id: claude
+        if: steps.key.outputs.key == 'ok'
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" # keep the API key out of tool subprocesses
@@ -648,7 +692,9 @@ jobs:
           retention-days: 14
 
       # No file means the intake failed: the job fails, publish skips, and the
-      # issue keeps its `factory` label for the reconciler's spec retry.
+      # issue keeps its `factory` label for the reconciler's spec retry. Not
+      # when the key check failed: publish then says so on the issue and
+      # labels it needs-human (a retry would fail the same way).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cadence-intake-${{ github.run_id }}
@@ -669,9 +715,36 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      # As in intake: no-key when the key check failed and the model step
+      # never ran (tier A).
+      preflight: ${{ steps.key.outcome == 'failure' && steps.key.outputs.key == 'missing' && steps.claude.outcome == 'skipped' && 'no-key' || '' }}
     env:
       BASE_SHA: ${{ github.sha }}
     steps:
+      # The key check, as in intake (byte for byte): first, before any spend.
+      - name: Check the Anthropic key is set
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Its length and whether it holds whitespace: nothing else of the
+          # key is read, and it is never echoed, compared or written.
+          missing() {
+            echo "key=missing" >> "$GITHUB_OUTPUT"
+            echo "::error title=ANTHROPIC_API_KEY is not usable::$1 The model was not called and nothing was spent. To fix it, a maintainer runs 'gh secret set ANTHROPIC_API_KEY --repo $GITHUB_REPOSITORY' in their own terminal and pastes the key at the prompt. GitHub never shows a secret's value, so it can be checked only by its length, which this step prints: an Anthropic API key is about 100 characters, with no spaces or line breaks."
+            exit 1
+          }
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            missing "The ANTHROPIC_API_KEY secret is missing or empty (length 0)."
+          fi
+          n=${#ANTHROPIC_API_KEY}
+          if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]] ]]; then
+            missing "The ANTHROPIC_API_KEY secret holds whitespace, such as a line break pasted with the key (length $n)."
+          fi
+          echo "key=ok" >> "$GITHUB_OUTPUT"
+          echo "ANTHROPIC_API_KEY is set: $n characters, no whitespace."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -720,6 +793,7 @@ jobs:
 
       - name: Run the agent team
         id: claude
+        if: steps.key.outputs.key == 'ok'
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" # keep the API key out of tool subprocesses
@@ -1420,9 +1494,36 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      # As in intake: no-key when the key check failed and the model step
+      # never ran (tier A).
+      preflight: ${{ steps.key.outcome == 'failure' && steps.key.outputs.key == 'missing' && steps.claude.outcome == 'skipped' && 'no-key' || '' }}
     env:
       BASE_SHA: ${{ github.sha }}
     steps:
+      # The key check, as in intake (byte for byte): first, before any spend.
+      - name: Check the Anthropic key is set
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Its length and whether it holds whitespace: nothing else of the
+          # key is read, and it is never echoed, compared or written.
+          missing() {
+            echo "key=missing" >> "$GITHUB_OUTPUT"
+            echo "::error title=ANTHROPIC_API_KEY is not usable::$1 The model was not called and nothing was spent. To fix it, a maintainer runs 'gh secret set ANTHROPIC_API_KEY --repo $GITHUB_REPOSITORY' in their own terminal and pastes the key at the prompt. GitHub never shows a secret's value, so it can be checked only by its length, which this step prints: an Anthropic API key is about 100 characters, with no spaces or line breaks."
+            exit 1
+          }
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            missing "The ANTHROPIC_API_KEY secret is missing or empty (length 0)."
+          fi
+          n=${#ANTHROPIC_API_KEY}
+          if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]] ]]; then
+            missing "The ANTHROPIC_API_KEY secret holds whitespace, such as a line break pasted with the key (length $n)."
+          fi
+          echo "key=ok" >> "$GITHUB_OUTPUT"
+          echo "ANTHROPIC_API_KEY is set: $n characters, no whitespace."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -1494,6 +1595,7 @@ jobs:
 
       - name: Run the agent team again
         id: claude
+        if: steps.key.outputs.key == 'ok'
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" # keep the API key out of tool subprocesses
@@ -1978,11 +2080,14 @@ jobs:
   # pushes that patch and opens a draft PR; it runs nothing the agent wrote:
   # every python step runs before `git apply`, and after it only git, gh and
   # the shell run. Keep it that way. On a failed gate it labels the issue
-  # and says why instead.
+  # and says why instead. When a model job's key check failed (intake or
+  # agent: the ANTHROPIC_API_KEY secret is missing or empty), it says that
+  # once on the issue, with fixed text, and labels it needs-human.
   publish:
     needs: [route, gate, intake, agent, verify, retry-gate, agent-retry, verify-retry]
     if: >-
-      ((needs.route.outputs.stage == 'spec' && needs.intake.result == 'success') ||
+      ((needs.route.outputs.stage == 'spec' &&
+        (needs.intake.result == 'success' || needs.intake.outputs.preflight == 'no-key')) ||
        (needs.route.outputs.stage == 'build' && needs.gate.outputs.proceed == 'true')) &&
       !cancelled()
     runs-on: ubuntu-latest
@@ -2007,13 +2112,13 @@ jobs:
     steps:
       # ---- spec stage: post the intake file ----
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: needs.route.outputs.stage == 'spec'
+        if: needs.route.outputs.stage == 'spec' && needs.intake.result == 'success'
         with:
           name: cadence-intake-${{ github.run_id }}
           path: ${{ runner.temp }}/intake
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: needs.route.outputs.stage == 'spec'
+        if: needs.route.outputs.stage == 'spec' && needs.intake.result == 'success'
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -2021,7 +2126,7 @@ jobs:
             tool
 
       - name: Post the spec or the questions
-        if: needs.route.outputs.stage == 'spec'
+        if: needs.route.outputs.stage == 'spec' && needs.intake.result == 'success'
         run: |
           set_state() { # one state label at a time; GITHUB_TOKEN, so no workflow starts
             local want="$1" have old
@@ -2073,6 +2178,44 @@ jobs:
           printf '\n\n<sub>Cadence factory, run %s</sub>\n' "$RUN_URL" >> "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -F "body=@$RUNNER_TEMP/comment.md" > /dev/null
           set_state "$state"
+
+      # ---- spec or build: the key check failed, so the model never ran ----
+      # Seen live (nik190799/backroom, 2026-10-03): with an empty secret the
+      # issue got no word at all. One comment, fixed text only, then
+      # needs-human (which also stops the reconciler's spec retry: it would
+      # fail the same way). The output is tier A (the model job's first step
+      # wrote it, before any model or agent code). A retry whose key check
+      # failed is told in the Definition of Done report instead: the first
+      # attempt did run and spend.
+      - name: Report the missing Anthropic key
+        if: needs.intake.outputs.preflight == 'no-key' || needs.agent.outputs.preflight == 'no-key'
+        env:
+          STAGE: ${{ needs.route.outputs.stage }}
+        run: |
+          set_state() { # one state label at a time; GITHUB_TOKEN, so no workflow starts
+            local want="$1" have old
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels" -f "labels[]=$want" > /dev/null
+            have=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels" --jq '.[].name')
+            for old in factory spec-ready building pr-open dod-failed needs-human; do
+              if [ "$old" != "$want" ] && grep -qxF "$old" <<<"$have"; then
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$ISSUE/labels/$old" > /dev/null
+              fi
+            done
+          }
+          {
+            printf 'The Cadence factory could not run: the `ANTHROPIC_API_KEY` secret of this repository is missing or empty (or holds whitespace), so the model was never called. No budget was spent: the ledger books this run at $0.\n\n'
+            printf 'A maintainer sets the key from their own terminal, pasting it at the prompt (never into an issue, a comment or a file):\n\n'
+            printf '```bash\ngh secret set ANTHROPIC_API_KEY --repo %s\n```\n\n' "$GITHUB_REPOSITORY"
+            printf 'GitHub never shows the value of a secret, so it can be checked only by its length: the step "Check the Anthropic key is set" in the run below prints it, and nothing else of the key. An Anthropic API key is about 100 characters, with no spaces or line breaks.\n\n'
+            if [ "$STAGE" = build ]; then
+              printf 'Then, to build the approved spec, add the `spec-ready` label back and reply `/approve`.\n\n'
+            else
+              printf 'Then add the `factory` label again to get the spec.\n\n'
+            fi
+            printf '<sub>Cadence factory, run %s</sub>\n' "$RUN_URL"
+          } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" -F "body=@$RUNNER_TEMP/comment.md" > /dev/null
+          set_state needs-human
 
       # ---- build stage: which attempt passed the gate ----
       # The first attempt if verify passed, else the retry if verify-retry
@@ -2398,6 +2541,7 @@ jobs:
           RETRY_GATE_RESULT: ${{ needs.retry-gate.result }}
           RETRY_WHY: ${{ needs.retry-gate.outputs.why }}
           AGENT_RETRY_RESULT: ${{ needs.agent-retry.result }}
+          AGENT_RETRY_PREFLIGHT: ${{ needs.agent-retry.outputs.preflight }}
         run: |
           set_state() { # one state label at a time; GITHUB_TOKEN, so no workflow starts
             local want="$1" have old
@@ -2426,7 +2570,14 @@ jobs:
           # One fixed sentence about the automatic retry.
           case "$AGENT_RETRY_RESULT" in
             success) retry="retried once and failed again" ;;
-            failure|cancelled) retry="the retry agent did not finish" ;;
+            failure)
+              if [ "$AGENT_RETRY_PREFLIGHT" = no-key ]; then
+                retry='the retry could not start: the `ANTHROPIC_API_KEY` secret is missing or empty, so the retry spent nothing. A maintainer sets it with `gh secret set ANTHROPIC_API_KEY`'
+              else
+                retry="the retry agent did not finish"
+              fi
+              ;;
+            cancelled) retry="the retry agent did not finish" ;;
             *)
               if [ "$RETRY_WHY" = "budget" ]; then
                 retry="not retried: over the daily budget"
@@ -2451,8 +2602,10 @@ jobs:
           set_state dod-failed
 
       # ---- the agent did not finish: needs a human ----
+      # Not when its key check failed: "Report the missing Anthropic key"
+      # said so already.
       - name: Report the agent failure
-        if: needs.agent.result == 'failure' || needs.agent.result == 'cancelled'
+        if: (needs.agent.result == 'failure' || needs.agent.result == 'cancelled') && needs.agent.outputs.preflight != 'no-key'
         env:
           AGENT_RESULT: ${{ needs.agent.result }}
         run: |
@@ -2503,6 +2656,11 @@ jobs:
       STAGE: ${{ needs.route.outputs.stage }}
       INTAKE_RESULT: ${{ needs.intake.result }}
       AGENT_RESULT: ${{ needs.agent.result }}
+      # no-key when that model job failed at its key check, before the
+      # model step (tier A job outputs): the attempt is booked at $0.
+      INTAKE_PREFLIGHT: ${{ needs.intake.outputs.preflight }}
+      AGENT_PREFLIGHT: ${{ needs.agent.outputs.preflight }}
+      AGENT_RETRY_PREFLIGHT: ${{ needs.agent-retry.outputs.preflight }}
       VERIFY_RESULT: ${{ needs.verify.result }}
       VERIFY_VERDICT: ${{ needs.verify.outputs.verdict }}
       AGENT_RETRY_RESULT: ${{ needs.agent-retry.result }}
@@ -2604,7 +2762,11 @@ jobs:
           mkdir -p "$staged/runs"
           # The model job's result decides the outcome; a job that never ran
           # spent nothing and gets no record.
-          if [ "$STAGE" = "spec" ]; then work="$INTAKE_RESULT"; else work="$AGENT_RESULT"; fi
+          if [ "$STAGE" = "spec" ]; then
+            work="$INTAKE_RESULT" preflight="$INTAKE_PREFLIGHT"
+          else
+            work="$AGENT_RESULT" preflight="$AGENT_PREFLIGHT"
+          fi
           case "$work" in
             success) outcome=success ;;
             failure) outcome=failure ;;   # a job timeout also reports failure or cancelled
@@ -2631,6 +2793,10 @@ jobs:
             cost_args=(--cost-usd 0 --turns 0)
           elif [ -f "$res/claude-result.json" ]; then
             cost_args=(--result-json "$res/claude-result.json")
+          elif [ "$outcome" = "failure" ] && [ "$preflight" = "no-key" ]; then
+            # The job failed at its key check: the model step never ran, so
+            # nothing was spent. Only that exact job output books $0.
+            cost_args=(--preflight no-key)
           fi # else no cost known: ledger.py books the full per-run cap
 
           stage_args=(--stage "$STAGE")
@@ -2659,8 +2825,8 @@ jobs:
 
       # The retry's own record: run id <run id>.retry1, the same run_attempt,
       # its own cost (the same rules: a re-run that did not re-run the model
-      # books $0, no known cost books the cap). The PR is booked here when
-      # the retry is what publish pushed.
+      # books $0, a failed key check books $0, any other unknown cost books
+      # the cap). The PR is booked here when the retry is what publish pushed.
       - name: Record the retry
         id: record_retry
         run: |
@@ -2688,6 +2854,8 @@ jobs:
             cost_args=(--cost-usd 0 --turns 0)
           elif [ -f "$res/claude-result.json" ]; then
             cost_args=(--result-json "$res/claude-result.json")
+          elif [ "$outcome" = "failure" ] && [ "$AGENT_RETRY_PREFLIGHT" = "no-key" ]; then
+            cost_args=(--preflight no-key) # the key check failed: no model step ran
           fi # else no cost known: ledger.py books the full per-run cap
 
           stage_args=(--stage build --base-sha "$GITHUB_SHA")
@@ -3179,7 +3347,34 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      # As in intake: no-key when the key check failed and the model step
+      # never ran (tier A); learn-record then books classify at $0.
+      preflight: ${{ steps.key.outcome == 'failure' && steps.key.outputs.key == 'missing' && steps.claude.outcome == 'skipped' && 'no-key' || '' }}
     steps:
+      # The key check, as in intake (byte for byte): first, before any spend.
+      - name: Check the Anthropic key is set
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Its length and whether it holds whitespace: nothing else of the
+          # key is read, and it is never echoed, compared or written.
+          missing() {
+            echo "key=missing" >> "$GITHUB_OUTPUT"
+            echo "::error title=ANTHROPIC_API_KEY is not usable::$1 The model was not called and nothing was spent. To fix it, a maintainer runs 'gh secret set ANTHROPIC_API_KEY --repo $GITHUB_REPOSITORY' in their own terminal and pastes the key at the prompt. GitHub never shows a secret's value, so it can be checked only by its length, which this step prints: an Anthropic API key is about 100 characters, with no spaces or line breaks."
+            exit 1
+          }
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            missing "The ANTHROPIC_API_KEY secret is missing or empty (length 0)."
+          fi
+          n=${#ANTHROPIC_API_KEY}
+          if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]] ]]; then
+            missing "The ANTHROPIC_API_KEY secret holds whitespace, such as a line break pasted with the key (length $n)."
+          fi
+          echo "key=ok" >> "$GITHUB_OUTPUT"
+          echo "ANTHROPIC_API_KEY is set: $n characters, no whitespace."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -3218,6 +3413,7 @@ jobs:
       # learning.budget.per_run_usd, which harvest checked against the pool.
       - name: Classify review comments
         id: claude
+        if: steps.key.outputs.key == 'ok'
         uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" # keep the API key out of tool subprocesses
@@ -3282,6 +3478,8 @@ jobs:
     permissions: {} # everything here uses the App token
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
+      # no-key when classify failed at its key check (tier A): booked at $0.
+      CLASSIFY_PREFLIGHT: ${{ needs.classify.outputs.preflight }}
     steps:
       - name: Mint the App token
         id: app
@@ -3398,7 +3596,11 @@ jobs:
             cost_args=(--cost-usd 0 --turns 0)
           elif [ -f "$res/claude-result.json" ]; then
             cost_args=(--result-json "$res/claude-result.json")
-          fi # else no cost known: ledger.py books the full per-run cap
+          elif [ "$outcome" = "failure" ] && [ "$CLASSIFY_PREFLIGHT" = "no-key" ]; then
+            # classify failed at its key check: the model step never ran.
+            echo "::warning title=classify did not run::The ANTHROPIC_API_KEY secret is missing or empty; booked at \$0. Review comments stay unclassified."
+            cost_args=(--preflight no-key)
+          fi # else no cost known: ledger.py books the learn per-run cap
           set +e
           python base/tool/ledger.py --config base/.cadence/factory.yaml --records-dir state/runs \
             record --stage learn --run-id "$GITHUB_RUN_ID.learn" --run-attempt "$GITHUB_RUN_ATTEMPT" \
