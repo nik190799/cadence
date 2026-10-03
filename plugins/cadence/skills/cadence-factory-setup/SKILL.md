@@ -26,7 +26,11 @@ and merges; nothing is pushed to the default branch directly.
 3. **The user's own model key.** Ask the user to add
    `ANTHROPIC_API_KEY` as an Actions secret themselves. Recommend a
    dedicated key with its own spend limit. Cadence never sees, stores
-   or pays for model usage.
+   or pays for model usage. GitHub never shows a secret's value, so it
+   can be checked only by its length: the first step of every model job,
+   "Check the Anthropic key is set", prints it (an Anthropic API key is
+   about 100 characters) and stops the job before any spend when the key
+   is missing, empty or holds whitespace.
 4. **Budget and autonomy.** Write `.cadence/factory.yaml` with a per-run
    cap (`--max-budget-usd`), a daily cap, `max_turns`, and
    `autonomy: pr-only` as the default. Auto-merge is opt-in, per path,

@@ -87,6 +87,22 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
   `observation.schema.json` and `metrics.schema.json`. No existing number
   and no kill criterion changes; prevention is measured by the rules-on vs
   rules-frozen eval.
+- An empty or missing `ANTHROPIC_API_KEY` no longer spends the day's
+  budget (seen live in `a private product repo`: three spec runs failed inside
+  `claude-code-action` without calling the model, each was booked at the
+  full $2 cap, and the issue got no word). `intake`, `agent`,
+  `agent-retry` and `classify` start with one identical step, "Check the
+  Anthropic key is set", which reads the secret from `env` only, looks at
+  nothing but its length and whether it holds whitespace, never prints it,
+  and fails the job before the model step with `key=missing`. Each job
+  outputs `preflight: no-key` only then. `ledger.py record --preflight
+  no-key` books such an attempt at $0 (`cost_source`
+  `preflight:no-key`), only with `--outcome failure` and no cost, turns,
+  result file, PR or published sha; `ledger` and `learn-record` pass it
+  only on that job output. Every other unreported cost still books the
+  cap. `publish` (now also run when `intake` failed its key check) posts
+  one fixed comment saying the key is missing or empty, how to set it and
+  that nothing was spent, and labels the issue `needs-human`.
 
 ## [0.3.0-rc.2] — 2026-05-27
 

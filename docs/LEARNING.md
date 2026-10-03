@@ -211,7 +211,12 @@ A build's retry is booked under the run id `<run>.retry1`
 `findings/` and `patches/`). `prs/` names the attempt that was published.
 `learn-record` books classify's spend under `<run>.learn`
 (`runs/<run>.learn-<attempt>.json`): when the chain runs in a build run,
-`runs/<run>-<attempt>.json` is the build's own record. A record's `dod` is
+`runs/<run>-<attempt>.json` is the build's own record. A classify with no
+reported cost is booked at `learning.budget.per_run_usd`, except one that
+failed at its first step, the key check (the `ANTHROPIC_API_KEY` secret
+missing or empty, so its model step never ran): $0, `cost_source`
+`preflight:no-key`, read from classify's own `preflight` output
+([FACTORY.md](FACTORY.md), "The key check"). A record's `dod` is
 the verdict of a `verify` job that finished (`pass`, `fail`), `unknown`
 when it did not, and `skipped` when it never ran. An observation's
 `verify_result` keeps its words: `success` for pass, `failure` for fail or

@@ -87,6 +87,36 @@ gh secret set ANTHROPIC_API_KEY --repo "$R"         # prompts for the value
 Then delete the downloaded `.pem` (or keep it only in a password
 manager).
 
+**Check a secret by its length.** GitHub never shows a secret's value
+again, to anyone: the UI and `gh secret list` give only its name and when
+it was last updated, and a secret that exists can still be empty. So the
+only check is its length, which never reveals the key. Every model job
+(`intake`, `agent`, `agent-retry`, `classify`) prints it in its first step,
+"Check the Anthropic key is set", for example
+`ANTHROPIC_API_KEY is set: 108 characters, no whitespace.` An Anthropic API
+key is about 100 characters, with no spaces or line breaks. When the length
+is 0 (the secret is missing or empty) or the key holds whitespace (a line
+break pasted with it, say), that step fails the job before the model is
+called: the ledger books the run at $0, and the factory comments on the
+issue with the fix and labels it `needs-human`. It cannot tell a wrong or
+revoked key, which still fails inside `claude-code-action` and is booked at
+the full per-run cap.
+
+To measure the key before you store it, again without printing it, in
+bash (zsh's `read -p` means something else). The second line stores
+nothing when the value is empty, say Enter pressed before pasting: piped
+from an empty variable, `gh secret set` would store an empty secret,
+the very case below.
+
+```bash
+read -rs -p 'Anthropic key: ' KEY; echo; echo "${#KEY} characters"
+[ -n "$KEY" ] && printf '%s' "$KEY" | gh secret set ANTHROPIC_API_KEY --repo "$R"; unset KEY
+```
+
+(Seen live in `a private product repo`, 2026-10-03: the secret existed but was
+empty, three spec runs failed, and before the key check each was booked at
+the full $2 cap.)
+
 **Variables** (tab **Variables**, **New repository variable**):
 
 | Name | Value | Why |
@@ -205,7 +235,8 @@ workflow from there.
 - **<https://github.com/settings/installations> → the App:** repository
   access lists only `cadence-eval-sandbox`.
 - **Sandbox → Settings → Secrets and variables → Actions:** three secrets,
-  two variables (GitHub shows the names only).
+  two variables (GitHub shows the names only; the first model run prints
+  the key's length, as above).
 - **Sandbox → Settings → Actions → General:** leave **Workflow
   permissions** at read-only, and leave **Allow GitHub Actions to create
   and approve pull requests** unticked (the App opens the PRs).
