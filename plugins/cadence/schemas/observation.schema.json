@@ -128,7 +128,11 @@
             "additionalProperties": false,
             "required": ["root", "op", "path"],
             "properties": {
-              "root": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+              "root": {
+                "type": "string",
+                "pattern": "^(?!(?:[^/]*/)*\\.{1,2}(?:/|$))[A-Za-z0-9_.-]{1,64}(?:/[A-Za-z0-9_.-]{1,64}){0,5}$",
+                "description": "The deepest guarded path or test root that holds the file: a relative directory path of 1 to 6 segments, none of them . or .. (learning.guarded_paths, learning.test_roots)."
+              },
               "op": { "type": "string", "enum": ["add", "modify", "delete"] },
               "path": { "$ref": "#/$defs/anyPath" }
             }

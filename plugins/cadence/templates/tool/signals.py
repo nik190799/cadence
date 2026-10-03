@@ -24,8 +24,16 @@ Commands (``python tool/signals.py <cmd> --help`` for every option):
               ``--work-dir`` (the base commit with ``change.patch`` applied
               by ``git apply --index``) against HEAD, the base rules in
               ``--base-dir/.cadence/cadence.yaml``, the verify logs and the
-              agent's result file. With ``--spec`` (the approved spec the
-              build used; ``--spec-sha256`` is the sha256 the gate recorded
+              agent's result file. Guarded operations follow the gate's
+              apply step: a file under a guarded path (.github, .cadence,
+              scripts, tool and ``learning.guarded_paths``, which may be
+              nested, such as server/tests) is guarded, except a new file
+              under a test root; each is named after the deepest guarded
+              path or test root that holds it. A file under a test root
+              also counts as a test (as do ``learning.test_globs``), for
+              missing-test here and test-added in harvest. With ``--spec``
+              (the approved spec the build used; ``--spec-sha256`` is the
+              sha256 the gate recorded
               for it) it also records ``lessons_cited``: the sorted lesson
               ids that appear in the spec as exact tokens (LESSON_TOKEN_RE)
               and are active lessons (rung pattern or check, id =
@@ -1225,12 +1233,16 @@ def _read_log(path: Path) -> str | None:
 
 
 def failing_tests_from_logs(
-    texts: Iterable[str], base_dir: Path, test_globs: Sequence[str]
+    texts: Iterable[str],
+    base_dir: Path,
+    test_globs: Sequence[str],
+    test_roots: Sequence[str] = (),
 ) -> list[str]:
     """Test files a log names as failing that exist in the base tree.
 
-    Matches only the exact vitest/jest and pytest shapes (tier B: agent code
-    writes this log). At most 20, in log order.
+    A test file matches ``test_globs`` or lies under a test root
+    (``is_test_path``). Matches only the exact vitest/jest and pytest shapes
+    (tier B: agent code writes this log). At most 20, in log order.
     """
     found: list[str] = []
     for text in texts:
@@ -1245,7 +1257,7 @@ def failing_tests_from_logs(
             rel = _norm_rel(candidate)
             if not rel or rel != candidate or not _SAFE_PATH.fullmatch(rel):
                 continue
-            if rel in found or not matches_any(rel, test_globs):
+            if rel in found or not is_test_path(rel, test_globs, test_roots):
                 continue
             if _tree_kind(base_dir, rel) != "file":
                 continue
@@ -1477,8 +1489,11 @@ def _source_ext(path: str) -> bool:
     return posixpath.splitext(path)[1] in check_boundaries._SOURCE_EXTS
 
 
-def _root_of(path: str) -> str | None:
-    return path.split("/", 1)[0] if "/" in path else None
+def is_test_path(path: str, test_globs: Sequence[str], test_roots: Sequence[str] = ()) -> bool:
+    """A test file: it matches ``learning.test_globs`` or lies under a test
+    root (``learning.test_roots``, where the gate keeps new files), so
+    ``server/tests/conftest.py`` counts under a ``server/tests`` root."""
+    return matches_any(path, test_globs) or ledger.deepest_root(path, test_roots) is not None
 
 
 def _hit_key(
@@ -1516,6 +1531,11 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
     cfg = inp.config
     depth = cfg.area_depth
     truncated = False
+    # What the gate guards (.github, .cadence, scripts and tool always, then
+    # learning.guarded_paths), and the roots a guarded operation is named
+    # after: the deepest guarded path or test root that holds the file.
+    guarded_roots = ledger.effective_guarded(cfg.guarded_paths)
+    named_roots = (*guarded_roots, *(r for r in cfg.test_roots if r not in guarded_roots))
     patch_sha, patch_bytes = _patch_digest(inp.patch)
     if inp.apply_status == "missing":
         patch_sha, patch_bytes = None, 0
@@ -1532,8 +1552,8 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
                 truncated = True
                 continue
             op = status if status in ("A", "D") else "M"
-            is_test = matches_any(path, cfg.test_globs)
-            root = _root_of(path)
+            is_test = is_test_path(path, cfg.test_globs, cfg.test_roots)
+            in_guarded = ledger.deepest_root(path, guarded_roots) is not None
             readable = False
             if op != "D":
                 size = _file_size(inp.work_dir, path)
@@ -1549,7 +1569,7 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
                     op=op,
                     area=area(path, depth),
                     test=is_test,
-                    source=_source_ext(path) and not is_test and root not in cfg.guarded_paths,
+                    source=_source_ext(path) and not is_test and not in_guarded,
                     readable=readable,
                 )
             )
@@ -1642,16 +1662,18 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
                 }
             )
 
-    # Guarded roots, recomputed from the staged diff.
+    # Guarded paths, recomputed from the staged diff as the gate's apply step
+    # treats them: every file under a guarded path is restored or left out,
+    # except a new file under a test root, which is kept.
     op_word = {"A": "add", "M": "modify", "D": "delete"}
     guarded: list[dict[str, Any]] = []
     for change in changes:
-        root = _root_of(change.path)
-        if root is None or root not in cfg.guarded_paths:
+        if ledger.deepest_root(change.path, guarded_roots) is None:
             continue
         op = op_word[change.op]
-        if op == "add" and root in cfg.test_roots:
+        if op == "add" and ledger.deepest_root(change.path, cfg.test_roots) is not None:
             continue  # new test files are allowed
+        root = ledger.deepest_root(change.path, named_roots)
         guarded.append({"root": root, "op": op, "path": change.path})
 
     # Failing tests and the gate step (tier B).
@@ -1667,7 +1689,7 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
                 console_log = text
     failing: list[str] = []
     if inp.verify_result == "failure":
-        failing = failing_tests_from_logs(logs, inp.base_dir, cfg.test_globs)
+        failing = failing_tests_from_logs(logs, inp.base_dir, cfg.test_globs, cfg.test_roots)
     step = gate_step(inp.verify_result, inp.apply_status, (c.path for c in changes), console_log)
     subtype = agent_subtype(inp.result_json)
 
@@ -1808,7 +1830,7 @@ def observe(inp: ObserveInput, git: Runner = run_proc) -> tuple[dict[str, Any], 
         )
     for entry in guarded:
         key = f"guarded:{entry['root']}:{entry['op']}"
-        if key in seen_keys:
+        if key in seen_keys or not valid_class_key(key):
             continue
         seen_keys.add(key)
         shown = entry["path"] if _SAFE_PATH.fullmatch(entry["path"]) else "a file"
@@ -2654,12 +2676,13 @@ def _edit_kind(
     base_to_head: set[str],
     fd: FileDiff | None,
     test_globs: Sequence[str],
+    test_roots: Sequence[str] = (),
 ) -> str | None:
     if status == "D" and path in agent_paths:
         return "delete-file"
     if path in agent_paths and path not in base_to_head:
         return "revert-file"
-    if status == "A" and matches_any(path, test_globs):
+    if status == "A" and is_test_path(path, test_globs, test_roots):
         return "test-added"
     changed = len(fd.added) + len(fd.removed) if fd is not None else 0
     if changed >= EDIT_OTHER_MIN_LINES:
@@ -2932,7 +2955,13 @@ def harvest_agent_pr(
         if file_area is None:
             continue
         kind = _edit_kind(
-            statuses[path], path, agent_paths, base_to_head, diffs.get(path), cfg.test_globs
+            statuses[path],
+            path,
+            agent_paths,
+            base_to_head,
+            diffs.get(path),
+            cfg.test_globs,
+            cfg.test_roots,
         )
         if kind is None:
             continue

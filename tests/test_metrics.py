@@ -150,6 +150,34 @@ def test_guarded_classes_are_always_exposed(tmp_path):
     assert rep["test_tampering_rate"] == 0.666667
 
 
+def test_tampering_counts_nested_test_roots(tmp_path):
+    """Test roots may be nested (server/tests, the product repo 2026-10-03): an edit
+    under one counts as tampering whichever guarded path observe named it
+    after, and the ladder reads the nested root from the observation."""
+    state = b.StateDir(tmp_path / "state")
+    named_by_root = [{"root": "server/tests", "op": "modify", "path": "server/tests/test_api.py"}]
+    named_by_parent = [{"root": "server", "op": "delete", "path": "server/tests/conftest.py"}]
+    elsewhere = [{"root": "server", "op": "modify", "path": "server/app.py"}]
+    added = [{"root": "server/tests", "op": "add", "path": "server/tests/x.py"}]
+    state.observe(b.observation("101", 1, day=0, files=[TEST_FILE], guarded=named_by_root))
+    state.observe(b.observation("102", 2, day=1, files=[TEST_FILE], guarded=named_by_parent))
+    state.observe(b.observation("103", 3, day=2, files=[TEST_FILE], guarded=elsewhere))
+    state.observe(b.observation("104", 4, day=3, files=[TEST_FILE], guarded=added))
+    st = ladder.read_state(state.root, ladder.Schemas(None, b.SCHEMA_DIR))
+    assert {op.root for a in st.attempts for op in a.obs.guarded} == {"server/tests", "server"}
+    det = metrics.current_detector(st, [], [])
+    rep = metrics.build_report(
+        st, ladder.Settings(test_roots=("server/tests",)), det, order="time", window=0,
+        since=None, lessons=[], judge_pairs=None, now=b.epoch(40),
+    )
+    assert rep["test_tampering_rate"] == 0.5
+    # With the default roots none of them is under a test root.
+    assert report(state)["test_tampering_rate"] == 0.0
+    assert ladder.settings_from(ladder.Settings(test_roots=("server/tests", "web/src/__tests__")))
+    with pytest.raises(ladder.LadderError):
+        ladder.settings_from(ladder.Settings(test_roots=("../tests",)))
+
+
 def test_the_same_issue_never_counts_as_a_repeat(tmp_path):
     state = b.StateDir(tmp_path / "state")
     with_k(state, "101", 1, 0)

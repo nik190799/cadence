@@ -512,10 +512,8 @@ def build_report(
     for a in sc.ordered:
         first.setdefault(a.issue, a)
     first_pass = _rate(sum(1 for a in first.values() if a.obs.verify_result == "success"), len(first))
-    roots = set(getattr(settings, "test_roots", ("tests", "test")))
-    tampered = sum(
-        1 for a in sc.ordered if any(g.root in roots and g.op in ("modify", "delete") for g in a.obs.guarded)
-    )
+    roots = tuple(getattr(settings, "test_roots", ("tests", "test")))
+    tampered = sum(1 for a in sc.ordered if tampered_with_tests(a.obs, roots))
 
     rungs = {l["class_key"]: l["rung"] for l in lessons}
     per_class: dict[str, dict[str, Any]] = {}
@@ -633,6 +631,23 @@ class TicketTotals:
     tampered: int = 0
 
 
+def _within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + "/")
+
+
+def tampered_with_tests(obs: Any, test_roots: Sequence[str]) -> bool:
+    """The attempt modified or deleted an existing file under a test root.
+
+    Test roots may be nested (server/tests): a guarded operation counts when
+    its root is a test root or lies under one, or its path lies under one,
+    so it does not matter which guarded path observe named it after."""
+    return any(
+        g.op in ("modify", "delete")
+        and any(_within(g.root, r) or g.path.startswith(r + "/") for r in test_roots)
+        for g in obs.guarded
+    )
+
+
 def arm_totals(
     states: Sequence[Any],
     det: Any,
@@ -642,7 +657,7 @@ def arm_totals(
     window: int,
     test_roots: Iterable[str],
 ) -> tuple[dict[str, TicketTotals], list[float]]:
-    roots = set(test_roots)
+    roots = tuple(test_roots)
     per_ticket: dict[str, TicketTotals] = defaultdict(TicketTotals)
     costs: list[float] = []
     for state in states:
@@ -655,7 +670,7 @@ def arm_totals(
                 continue
             totals = per_ticket[ticket]
             totals.attempts += 1
-            if any(g.root in roots and g.op in ("modify", "delete") for g in a.obs.guarded):
+            if tampered_with_tests(a.obs, roots):
                 totals.tampered += 1
             records = [state.runs[r] for r in a.runs if r in state.runs]
             if records:

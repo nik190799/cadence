@@ -106,7 +106,8 @@ ids, results and these evidence lists, each capped at 200 entries:
 - `import_edges`: every import line the patch **added** that crosses areas.
   Each entry has the resolved target, the class key and the location. When
   the line matches the strict import-line pattern, the line itself is kept.
-- `guarded`: operations on guarded roots.
+- `guarded`: operations on guarded paths, each named after the deepest
+  guarded path or test root that holds the file (`server/tests`).
 - `rule_hits`: live boundary rules (the base `.cadence/cadence.yaml`) that
   fire on added lines.
 - `failing_tests`: test files named in the verify log (tier B).
@@ -138,7 +139,7 @@ class, and no fuzzy matching is used.
 | Family | Key | From | Trust | Scope |
 |---|---|---|---|---|
 | import-edge | `import-edge:<from>-><to>` | an added import; `<to>` is an area or `pkg:<name>` | A | headline |
-| guarded | `guarded:<root>:<add\|modify\|delete>` | the patch touches a guarded root (new files under test roots are allowed) | A | headline |
+| guarded | `guarded:<root>:<add\|modify\|delete>` | the patch touches a guarded path, top-level or nested (`guarded:server/tests:modify`; new files under test roots are allowed) | A | headline |
 | missing-test | `missing-test:<area>` | source changed in the area, and no test file was touched | A | headline |
 | test | `test:<path>` | a failing test named in the verify log that exists in base | B | headline |
 | edit | `edit:<test-added\|revert-file\|delete-file\|other>:<area>` | human commits after the agent's | A | post-PR |
@@ -266,6 +267,37 @@ learning:
 gap: the sandbox keeps its tests in `test/`, and edits there were neither
 restored nor flagged.
 
+Both lists take relative directory paths, top-level or nested (found
+preparing the product repo, which keeps its tests in `server/tests`, 2026-10-03):
+
+- each entry is 1 to 6 segments of `[A-Za-z0-9_.-]{1,64}` joined by `/`,
+  with no `.` or `..` segment, no leading or trailing `/` and no glob
+  (`server/tests`, `web/src/__tests__`); at most 16 entries per list;
+- `.github`, `.cadence`, `scripts` and `tool` are always guarded, whatever
+  `guarded_paths` says;
+- every test root is a guarded path or lies under one, and never under
+  `.github`, `.cadence`, `scripts` or `tool` (a new file there could steer
+  the graders);
+- a file under a test root counts as a test, as a file matching
+  `test_globs` does (missing-test, `edit:test-added`, failing tests).
+
+`ledger.py` refuses anything else, so `route` stops a build on a bad list
+before any spend. The workflow's paths step (one script in `route`,
+`verify` and `verify-retry`) checks the same shape again in bash. The gate
+restores every existing file under a guarded path and leaves out new files
+there unless they lie under a test root. The agent and agent-retry prompts
+name both lists from `route`'s validated outputs. For tests in
+`server/tests`:
+
+```yaml
+learning:
+  guarded_paths: [server/tests, tests, .github, .cadence, scripts, tool]
+  test_roots: [server/tests, tests]
+```
+
+Keep `tests` (or at least `tests/fixtures/retro`) guarded: the learned
+checks are proven on the samples there.
+
 The retry switch sits at the top level of `factory.yaml`, outside
 `learning:`: `retry: {on_dod_fail: 1}` (0 turns it off).
 
@@ -301,7 +333,12 @@ them. `ledger` then:
 ### 2. Guarded paths
 
 `observe` recomputes guarded operations from the staged diff
-(`--name-status -z --no-renames`) instead of trusting verify's output.
+(`--name-status -z --no-renames`) instead of trusting verify's output. It
+treats a file as the gate does: guarded when it lies under `.github`,
+`.cadence`, `scripts`, `tool` or a `guarded_paths` entry, except a new file
+under a test root. Each operation is named after the deepest guarded path
+or test root that holds the file, so an edit to
+`server/tests/test_api.py` is `guarded:server/tests:modify`.
 `verify` still restores guarded paths and flags them. `publish` still pushes
 the full patch, so a guarded edit in a published PR counts as an escape.
 
@@ -582,7 +619,8 @@ missing-test and test.
     issue outside its evidence.
   - `post_promotion_exposed_no_repeat`
   - first-pass verify rate (the first attempt, before any retry)
-  - test-tampering rate (`guarded:<test root>:modify|delete`)
+  - test-tampering rate (`guarded:<root>:modify|delete` on a file under a
+    test root, nested roots included)
   - merge rate within 30 days
   - cost per attempt and per merged PR (spec, build and learn spend)
   - new-class rate
@@ -701,6 +739,7 @@ for this.
 | The state branch | Only the App writes it, and files are create-only. Paths and sizes are checked. No job that runs code checks it out. Recommended: a ruleset that limits `cadence/state` and `cadence/retro` to the App |
 | Spend | Learn caps sit inside the global daily cap. The gate counts a running `classify` as in flight, and a build whose retry was granted as two |
 | The DoD retry | It runs inside the run a human approved: no job dispatches a run, and `route.py` lets the App dispatch `spec` only. Only `format`, `lint`, `boundaries` and `test` failures are retried, once. `retry-gate` holds no secrets, waits in the gate's queue and checks two `per_run_usd` for the run against the daily cap before it grants. The failed step reaches the agent as a fixed word; the verify log as a cleaned, size-limited, credential-redacted file marked untrusted. `agent-retry` applies the first patch with git only, last before the agent, and leaves out `.claude/` and `.mcp.json`, which Claude Code loads as configuration |
+| Guarded paths in prompts and pathspecs | `guarded_paths` and `test_roots` are checked twice before use (`ledger.py`, then the bash paths step): relative directory paths of `[A-Za-z0-9_.-]` segments, no `.` or `..`, no glob. They reach the agent prompts only as `route`'s outputs, written by the paths step after that check, never from issue or comment text. The apply step removes new files by their literal names (`git --literal-pathspecs rm`) |
 | A retro plan that fails `verify.sh` on every learn run | `retro-plan` demotes the checks and verifies once more. A plan that still fails is recorded by `retro-failed`, which holds the App token and runs git and jq only (no python, no `git apply`), create-only, from validated values |
 | Privacy | Authors are not stored, and there are no per-developer numbers. Comment text exists only in a 3-day artifact, and only when `classify` is on |
 
@@ -708,15 +747,15 @@ for this.
 
 | File | Change |
 |---|---|
-| `plugins/cadence/templates/tool/signals.py` | new: `observe` (`--spec`, `--spec-sha256` for `lessons_cited`), `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config`, `excerpt` |
-| `plugins/cadence/templates/tool/ladder.py` | new: `plan` (skips failed plans), `apply` (up to three samples; `--verify-failed`), `guard`, `pr-body` (an informational `lessons_cited` line) |
-| `plugins/cadence/templates/tool/metrics.py` | new: `report` (with the informational `lessons_cited` block), `compare` |
+| `plugins/cadence/templates/tool/signals.py` | new: `observe` (`--spec`, `--spec-sha256` for `lessons_cited`), `finalize`, `put`, `due`, `harvest`, `apply-classified`, `config`, `excerpt`; guarded operations and test roots follow nested guarded paths |
+| `plugins/cadence/templates/tool/ladder.py` | new: `plan` (skips failed plans), `apply` (up to three samples; `--verify-failed`), `guard`, `pr-body` (an informational `lessons_cited` line); reads nested guarded roots and test roots |
+| `plugins/cadence/templates/tool/metrics.py` | new: `report` (with the informational `lessons_cited` block), `compare`; test tampering under nested test roots |
 | `plugins/cadence/templates/tool/emit_rule.py` | provenance, `--must-pass-root`, `--rule-id`, `--retire`, `--replay`, `--json`, text-preserving apply, input hardening |
 | `plugins/cadence/templates/tool/check_boundaries.py` | rule ids; `paths=`; relative skip dirs; skips `tests/fixtures/retro/` and symlinks; resolves relative TS/JS and Python imports |
-| `plugins/cadence/templates/tool/ledger.py` | `--stage`, `--pr`, `--published-sha`, `--base-sha`, `check --pool learn`, `load_learning()`, `retry.on_dod_fail` |
+| `plugins/cadence/templates/tool/ledger.py` | `--stage`, `--pr`, `--published-sha`, `--base-sha`, `check --pool learn`, `load_learning()`, `retry.on_dod_fail`; nested `guarded_paths` and `test_roots` (`GUARDED_PATH_RE`) |
 | `plugins/cadence/templates/tool/reconcile.py` | runs titled `#sweep` and `#learn` name no issue |
 | `plugins/cadence/schemas/retro.schema.json` | `factory` object; stricter `violation_sample` |
-| `plugins/cadence/schemas/observation.schema.json` | new; optional `lessons_cited` |
+| `plugins/cadence/schemas/observation.schema.json` | new; optional `lessons_cited`; a guarded `root` may be nested |
 | `plugins/cadence/schemas/classify.schema.json` | new |
 | `plugins/cadence/schemas/lessons.schema.json` | new |
 | `plugins/cadence/schemas/retro-plan.schema.json` | new; reason `verify-fallback`, optional `alternates` |
@@ -725,7 +764,7 @@ for this.
 | `plugins/cadence/skills/cadence-findings/SKILL.md` | new: read-only classifier |
 | `plugins/cadence/skills/cadence-retro/SKILL.md` | factory mode |
 | `plugins/cadence/skills/cadence-intake/SKILL.md` | reads `lessons.yaml` |
-| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; `gate` outputs the approved spec's `spec_sha256`, and `observe` and `observe-retry` read that spec from `cadence-input`; `verify` and `verify-retry` output the gate's `verdict` and stay green on a failed gate; the learn chain also runs at the end of a build run; every action pinned to a SHA |
+| `plugins/cadence/templates/.github/workflows/cadence-factory.yml.tmpl` | the jobs above, the retry jobs and `retro-failed`; `gate` outputs the approved spec's `spec_sha256`, and `observe` and `observe-retry` read that spec from `cadence-input`; `verify` and `verify-retry` output the gate's `verdict` and stay green on a failed gate; the learn chain also runs at the end of a build run; `route` reads the guarded paths with `verify`'s paths script for the agent prompts, and the paths and apply steps take nested paths; every action pinned to a SHA |
 | `plugins/cadence/templates/factory.yaml.tmpl` | `learning:` and `retry:` blocks |
 | `plugins/cadence/templates/docs/PATTERNS.md.tmpl` | learned section |
 
