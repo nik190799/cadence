@@ -558,3 +558,129 @@ def test_import_targets(rel, line, expected):
 )
 def test_target_matches(target, pattern, expected):
     assert checker._target_matches(target, pattern) is expected
+
+
+# --- Imports that span lines ---------------------------------------------------
+
+
+def _db_file_hits(root: Path, rel: str, text: str) -> list:
+    cfg = _project(root, _DB_RULE_YAML)
+    _put(root, rel, text)
+    return [(v.line_no, v.line) for v in checker.find_violations(root, checker._load_rules(cfg))]
+
+
+@pytest.mark.parametrize(
+    'rel,text,expected',
+    [
+        # Prettier wraps a named import past the print width.
+        (
+            'src/http/a.ts',
+            "import {\n  query,\n  type Options,\n} from '../db/index.js';\n",
+            [(4, "import { query, type Options, } from '../db/index.js';")],
+        ),
+        (
+            'src/http/a.ts',
+            "import type {\n  Row,\n} from '../db';\n",
+            [(3, "import type { Row, } from '../db';")],
+        ),
+        (
+            'src/http/a.ts',
+            "export {\n  query,\n  close,\n} from \"../db\";\n",
+            [(4, 'export { query, close, } from "../db";')],
+        ),
+        (
+            'src/http/a.ts',
+            "export type {\n  Row,\n} from '../db';\n",
+            [(3, "export type { Row, } from '../db';")],
+        ),
+        # A ``from`` on the line after the closing brace still belongs to it.
+        ('src/http/a.tsx', "import {\n  q\n}\nfrom '../db'\n", [(4, "import { q } from '../db'")]),
+        # One-line forms keep their line and text.
+        ('src/http/a.ts', "import type { Row } from '../db';\n", [(1, "import type { Row } from '../db';")]),
+        ('src/http/a.ts', "import '../db/side';\n", [(1, "import '../db/side';")]),
+        ('src/http/a.ts', "export * as db from '../db';\n", [(1, "export * as db from '../db';")]),
+        ('src/http/a.js', "import('../db');\n", [(1, "import('../db');")]),
+        ('src/http/a.ts', "const m = await import('../db');\n", [(1, "const m = await import('../db');")]),
+        ('src/http/a.cjs', "const db = require('../db');\n", [(1, "const db = require('../db');")]),
+        # Python: the module is on the first line, the names after it.
+        (
+            'src/http/a.py',
+            'from src.db.client import (\n    connect,\n    close,  # pooled\n)\n',
+            [(1, 'from src.db.client import ( connect, close,  # pooled )')],
+        ),
+        ('src/http/a.py', 'from src import (\n    db,\n)\n', [(1, 'from src import ( db, )')]),
+        ('src/http/a.py', 'from .. import (\n    cache,\n    db,\n)\n', [(1, 'from .. import ( cache, db, )')]),
+        ('src/http/a.py', 'from src import \\\n    db\n', [(1, 'from src import \\ db')]),
+    ],
+)
+def test_an_import_that_spans_lines_fires_once_at_its_specifier_line(tmp_path, rel, text, expected):
+    assert _db_file_hits(tmp_path, rel, text) == expected
+
+
+@pytest.mark.parametrize(
+    'rel,text',
+    [
+        ('src/http/a.ts', "/*\nimport { db } from '../db';\n*/\nexport const x = 1;\n"),
+        ('src/http/a.ts', "/**\n * import { db } from '../db';\n */\n"),
+        ('src/http/a.ts', "const s = `\nimport { db } from '../db';\n`;\n"),
+        ('src/http/a.ts', "import { a } from './a'; // from '../db'\n"),
+        ('src/http/a.ts', "const url = 'http://x/*';\nimport { a } from './a';\n// import { db } from '../db';\n"),
+        # A local export with no ``from`` does not swallow the lines after it.
+        ('src/http/a.ts', "export {\n  a,\n}\nconst s = '../db';\n"),
+        ('src/http/a.ts', "import {\n  dbish,\n} from '../dbutils';\n"),
+        ('src/http/a.ts', "loader.import('../db');\n"),
+        ('src/http/a.py', '"""Docs.\n\nfrom src.db import x\n"""\n'),
+        ("src/http/a.py", "x = '''\nimport src.db\n'''\n"),
+        ('src/http/a.py', 'from src import (\n    cache,  # not db\n)\n'),
+    ],
+)
+def test_comments_strings_and_lookalikes_across_lines_do_not_fire(tmp_path, rel, text):
+    assert _db_file_hits(tmp_path, rel, text) == []
+
+
+def test_a_local_export_without_from_ends_before_the_next_import(tmp_path):
+    text = "export {\n  a,\n}\nimport {\n  q,\n} from '../db'\n"
+    assert _db_file_hits(tmp_path, 'src/http/a.ts', text) == [(6, "import { q, } from '../db'")]
+
+
+def test_lines_after_a_multiline_import_keep_their_numbers(tmp_path):
+    text = (
+        "import {\n  a,\n} from './a';\n"
+        "/* a comment\n   over lines */\n"
+        "import { db } from '../db';\n"
+        "const x = 1;\n"
+        "export * from '../db/b';\n"
+    )
+    assert _db_file_hits(tmp_path, 'src/http/a.ts', text) == [
+        (6, "import { db } from '../db';"),
+        (8, "export * from '../db/b';"),
+    ]
+
+
+def test_a_multiline_import_is_reported_by_main_at_its_specifier_line(tmp_path, capsys):
+    _project(tmp_path, _DB_RULE_YAML)
+    _put(tmp_path, 'src/http/server.ts', "import {\n  query,\n} from '../db';\n")
+    assert checker.main(['--root', str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert 'src/http/server.ts:3' in err and "import { query, } from '../db';" in err
+
+
+def test_a_token_in_a_multiline_import_fires(tmp_path):
+    # The token path (no resolution) also sees the joined statement.
+    cfg = _project(tmp_path)
+    _put(tmp_path, 'src/features/a.ts', "import {\n  y,\n} from 'src/data/sources/x';\n")
+    found = checker.find_violations(tmp_path, checker._load_rules(cfg))
+    assert [(v.line_no, v.forbidden) for v in found] == [(3, 'src/data/sources/**')]
+
+
+def test_other_languages_are_still_read_a_line_at_a_time(tmp_path):
+    cfg = _project(
+        tmp_path,
+        'commands:\n  test: ["true"]\nboundaries:\n'
+        '  - where: "lib/**"\n'
+        '    forbidden: ["lib/data/**"]\n'
+        '    reason: "x"\n',
+    )
+    _put(tmp_path, 'lib/ui/a.dart', "import 'package:app/x.dart';\n/* */ import '../data/y.dart';\nimport '../data/z.dart';\n")
+    found = checker.find_violations(tmp_path, checker._load_rules(cfg))
+    assert [(v.line_no, v.line) for v in found] == [(3, "import '../data/z.dart';")]

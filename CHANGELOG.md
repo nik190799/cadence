@@ -7,6 +7,15 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **`tool/check_boundaries.py` reads imports that span lines.** It read
+  one line at a time, so a Prettier-wrapped `import {\n  a,\n} from
+  '../db';` (and a parenthesised Python `from x import (\n  a,\n)`) was
+  never checked past its first line. TS/JS and Python files are now read
+  a statement at a time, with comments (and template literals; Python
+  strings) blanked first so they cannot fire. A TS/JS violation is
+  reported at the line holding the module specifier, a Python one at its
+  first line. `export type {..} from`, `export * as ns from` and dynamic
+  `import(` lines are now checked too. Other languages are unchanged.
 - **`scripts/verify.{sh,ps1}` now write the verify evidence that
   `tool/compliance_report.py` reads.** Previously neither script wrote
   `.cadence/.last_verify_ok`, so no control could ever reach

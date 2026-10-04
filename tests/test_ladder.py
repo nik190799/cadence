@@ -1471,10 +1471,11 @@ def test_apply_skips_a_sample_whose_patch_fails_its_checks(tmp_path):
 
 
 def test_apply_with_the_real_emitter_lands_the_second_sample(tmp_path, git_env):
-    # `export type` is a strict TS import line (so it can be a sample), but the
-    # checker does not treat it as an import, so its rule does not fire there:
-    # emit exits 1 and apply moves on to the older, plain import.
-    type_line = "export type { Row } from '../db/client';"
+    # A Node subpath import (`#db`) is a strict TS import line (so it can be a
+    # sample), but the checker cannot resolve it and it holds no `db/` token,
+    # so its rule does not fire there: emit exits 1 and apply moves on to the
+    # older, plain import.
+    type_line = "import type { Row } from '#db';"
     root = b.make_repo(tmp_path / "repo", env=git_env)
     state = b.StateDir(tmp_path / "state")
     edge_attempt(state, "101", 1, 0)

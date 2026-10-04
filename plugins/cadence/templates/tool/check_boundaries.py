@@ -17,15 +17,39 @@ Usage:
 
 The checker is line-pattern based. It recognises ``import``, ``from``,
 ``require(``, ``use``, ``include``, ``#include``, and ``mod`` at the
-start of a (stripped) line, then checks the line two ways. A forbidden
-pattern fires on the line when either one hits (still at most one
-violation per pattern per line):
+start of a (stripped) line, then checks the import statement two ways.
+A forbidden pattern fires on the statement when either one hits (still
+at most one violation per pattern per statement):
 
-    Tokens      the line contains a path-shaped token of the pattern
+    Tokens      the statement contains a path-shaped token of the pattern
                 (``_forbidden_tokens``), for every language above.
-    Targets     the line's import resolves, lexically, to a repo path the
-                pattern matches (``import_targets``, ``_target_matches``),
+    Targets     the statement's import resolves, lexically, to a repo path
+                the pattern matches (``import_targets``, ``_target_matches``),
                 for TS/JS and Python files only.
+
+Statements (``_statements``): in most languages a statement is one line.
+TS/JS and Python files are read a statement at a time instead, so an
+import that spans lines is still checked:
+
+    TS/JS       comments and template literals are blanked first (so
+                ``/* import x from '../db' */`` is no import). An
+                ``import``/``export`` line with no module specifier yet is
+                joined with the lines after it until a specifier, a ``;``,
+                or, once its braces close, the end of the line (or a next
+                line starting with ``from``); a new import line ends it
+                too. ``export {..} from``, ``export type {..} from`` and
+                ``export * as ns from`` start a statement as well, as does a
+                line with a dynamic ``import(``. The
+                violation's line number is the line holding the specifier,
+                e.g. ``} from '../db';`` of a Prettier-wrapped import.
+    Python      comments and string literals are blanked first. A
+                ``from``/``import`` line is joined while a ``(`` is open
+                or a line ends in ``\\``; the line number is the first line
+                (it holds the module).
+
+A violation's ``line`` is the statement: the stripped line for a one-line
+statement, its stripped lines joined by single spaces otherwise. At most
+``_MAX_STATEMENT_LINES`` lines are joined.
 
 Targets catch what tokens cannot: a directory-index import such as
 ``from '../db'`` names no ``db/`` token, yet it imports ``src/db``.
@@ -179,6 +203,24 @@ _PY_FROM = re.compile(
 _PY_IMPORT = re.compile(r'^\s*import\s+(.+)$')
 _PY_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 _PY_DOTTED = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*')
+
+# Statement reading (``_statements``). The skip expressions match comments
+# and string literals; quoted strings end at their line when unterminated.
+_TS_SKIP = re.compile(
+    r"""//[^\n]*|/\*.*?(?:\*/|\Z)|`(?:\\.|[^`\\])*`?"""
+    r"""|'(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?""",
+    re.S,
+)
+_PY_SKIP = re.compile(
+    r"""#[^\n]*|'''(?:\\.|[^\\])*?(?:'''|\Z)|\"\"\"(?:\\.|[^\\])*?(?:\"\"\"|\Z)"""
+    r"""|'(?:\\.|[^'\\\n])*'?|"(?:\\.|[^"\\\n])*"?""",
+    re.S,
+)
+_NOT_NEWLINE = re.compile(r'[^\n]')
+_TS_EXPORT_FROM = re.compile(r'export\s+(?:type\s+)?[*{]')
+_TS_KEYWORD = re.compile(r'(?:import|export)\b')
+_TS_DYNAMIC = re.compile(r'(?<![\w$.])import\s*\(')
+_MAX_STATEMENT_LINES = 50
 
 
 class ConfigError(Exception):
@@ -410,6 +452,133 @@ def _target_matches(target: str, pattern: str) -> bool:
     return False
 
 
+# --- Import statements ----------------------------------------------------------
+
+
+def _blank(text: str) -> str:
+    """``text`` with every character but a newline turned into a space."""
+    return _NOT_NEWLINE.sub(' ', text)
+
+
+def _mask_ts(text: str) -> str:
+    """TS/JS ``text`` with comments and template literals blanked.
+
+    Quoted strings are kept (they hold the specifiers), and a quote inside
+    one never starts a comment. Lengths and newlines are unchanged.
+    """
+    return _TS_SKIP.sub(
+        lambda m: m.group(0) if m.group(0)[0] in '\'"' else _blank(m.group(0)), text
+    )
+
+
+def _mask_py(text: str) -> str:
+    """Python ``text`` with comments and string literals blanked."""
+    return _PY_SKIP.sub(lambda m: _blank(m.group(0)), text)
+
+
+def _joined(parts: Iterable[str]) -> str:
+    return ' '.join(part.strip() for part in parts if part.strip())
+
+
+def _is_ts_start(code: str) -> bool:
+    return (
+        _is_import_line(code)
+        or bool(_TS_EXPORT_FROM.match(code.lstrip()))
+        or bool(_TS_DYNAMIC.search(code))
+    )
+
+
+def _ts_statements(
+    lines: Sequence[str], masked: Sequence[str]
+) -> Iterable[tuple[int, str, str]]:
+    i, n = 0, len(lines)
+    while i < n:
+        code = masked[i]
+        if not _is_ts_start(code):
+            i += 1
+            continue
+        parts = [code]
+        j = i + 1
+        if _TS_KEYWORD.match(code.lstrip()):
+            depth = code.count('{') - code.count('}')
+            opened = '{' in code
+            while j < n and j - i < _MAX_STATEMENT_LINES:
+                text = '\n'.join(parts)
+                if _TS_SPEC.search(text) or ';' in text:
+                    break
+                nxt = masked[j]
+                starts_from = nxt.lstrip().startswith('from')
+                if opened and depth <= 0:
+                    # The braces closed: only a ``from '...'`` line continues.
+                    if starts_from:
+                        parts.append(nxt)
+                        j += 1
+                    break
+                if _is_ts_start(nxt) and not starts_from:
+                    break  # a new import begins; this one never got a specifier
+                parts.append(nxt)
+                depth += nxt.count('{') - nxt.count('}')
+                opened = opened or '{' in nxt
+                j += 1
+        if len(parts) == 1:
+            yield i + 1, lines[i].strip(), code
+        else:
+            text = '\n'.join(parts)
+            match = _TS_SPEC.search(text)
+            offset = text.count('\n', 0, match.start(2)) if match else 0
+            yield i + 1 + offset, _joined(lines[i:j]), _joined(parts)
+        i = j
+
+
+def _py_statements(
+    lines: Sequence[str], masked: Sequence[str]
+) -> Iterable[tuple[int, str, str]]:
+    i, n = 0, len(lines)
+    while i < n:
+        code = masked[i]
+        if not _is_import_line(code):
+            i += 1
+            continue
+        parts = [code]
+        j = i + 1
+        depth = code.count('(') - code.count(')')
+        more = code.rstrip().endswith('\\')
+        while j < n and j - i < _MAX_STATEMENT_LINES and (depth > 0 or more):
+            nxt = masked[j]
+            parts.append(nxt)
+            depth += nxt.count('(') - nxt.count(')')
+            more = nxt.rstrip().endswith('\\')
+            j += 1
+        if len(parts) == 1:
+            yield i + 1, lines[i].strip(), code
+        else:
+            code = _joined(part.rstrip().rstrip('\\') for part in parts)
+            yield i + 1, _joined(lines[i:j]), code
+        i = j
+
+
+def _statements(rel: str, text: str) -> Iterable[tuple[int, str, str]]:
+    """``(line_no, line, code)`` for each import statement in file ``rel``.
+
+    ``line`` is what a violation shows (the original text, stripped);
+    ``code`` is what tokens and targets are matched on. TS/JS and Python
+    statements may span lines and have comments (and, in Python, strings)
+    blanked in ``code``; any other file gives one statement per import
+    line, ``code`` being the line itself. See the module docstring.
+    """
+    lines = text.split('\n')
+    ext = posixpath.splitext(rel)[1]
+    if ext in _TS_EXTS:
+        yield from _ts_statements(lines, _mask_ts(text).split('\n'))
+    elif ext == _PY_EXT:
+        yield from _py_statements(lines, _mask_py(text).split('\n'))
+    else:
+        for line_no, raw in enumerate(lines, start=1):
+            line = raw.rstrip('\r')
+            if _is_import_line(line):
+                yield line_no, line.strip(), line
+
+
 def seed_rule_id(where: str, forbidden: Sequence[str]) -> str:
     """The id of a rule that has no explicit ``id``."""
     digest = hashlib.sha256((where + "|" + "|".join(forbidden)).encode("utf-8"))
@@ -553,9 +722,10 @@ def find_violations(
     """Violations of ``rules`` under ``root``.
 
     With ``paths``, only those repo-relative posix paths are scanned. A
-    forbidden pattern fires on an import line when one of its tokens is in
-    the line, or when one of the line's resolved targets matches it; at
-    most one violation per forbidden pattern per line.
+    forbidden pattern fires on an import statement (``_statements``) when
+    one of its tokens is in the statement, or when one of the statement's
+    resolved targets matches it; at most one violation per forbidden
+    pattern per statement, at the statement's reported line.
     """
     violations: list[Violation] = []
     forbidden_entries: list[tuple[Rule, str, list[str]]] = [
@@ -580,28 +750,25 @@ def find_violations(
 
         try:
             with path.open('r', encoding='utf-8', errors='ignore') as fh:
-                lines = fh.readlines()
+                text = fh.read()
         except OSError:
             continue
 
-        for line_no, raw in enumerate(lines, start=1):
-            line = raw.rstrip('\n\r')
-            if not _is_import_line(line):
-                continue
+        for line_no, line, code in _statements(rel, text):
             targets: list[str] | None = None
             for rule, forbidden, tokens in applicable:
-                hit = any(_line_contains_token(line, token) for token in tokens)
+                hit = any(_line_contains_token(code, token) for token in tokens)
                 if not hit:
                     if targets is None:
-                        targets = import_targets(rel, line)
+                        targets = import_targets(rel, code)
                     hit = any(_target_matches(t, forbidden) for t in targets)
                 if hit:
-                    # one violation per forbidden pattern per line
+                    # one violation per forbidden pattern per statement
                     violations.append(
                         Violation(
                             path=rel,
                             line_no=line_no,
-                            line=line.strip(),
+                            line=line,
                             forbidden=forbidden,
                             reason=rule.reason,
                             rule_id=rule.id,
