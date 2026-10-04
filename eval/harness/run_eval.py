@@ -124,6 +124,31 @@ def key_file(cfg: Config) -> Path:
     return cfg.home / "secrets" / "anthropic.key"
 
 
+def key_accepted(path: Path) -> dict[str, Any]:
+    """One free authenticated call (list one model): the key's format and the
+    HTTP status, never the key. A run on a rejected key would book every
+    ticket as a model failure, since a 401 is not a void."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"prefix_ok": False, "status": None, "ok": False}
+    out: dict[str, Any] = {"prefix_ok": key.startswith(privacy._KEY_PREFIX), "status": None}
+    req = urllib.request.Request("https://api.anthropic.com/v1/models?limit=1",
+                                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            out["status"] = resp.status
+    except urllib.error.HTTPError as err:
+        out["status"] = err.code
+    except OSError as err:
+        out["error"] = type(err).__name__
+    out["ok"] = out["prefix_ok"] and out["status"] == 200
+    return out
+
+
 def doctor(cfg: Config, live: bool) -> tuple[bool, dict[str, Any]]:
     report: dict[str, Any] = {"sandbox": cfg.sandbox, "checks": {}}
     checks = report["checks"]
@@ -155,7 +180,9 @@ def doctor(cfg: Config, live: bool) -> tuple[bool, dict[str, Any]]:
         kf = key_file(cfg)
         mode_ok = kf.is_file() and not (kf.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO))
         checks["key_file"] = {"present": kf.is_file(), "private_mode": mode_ok}
+        checks["key_accepted"] = key_accepted(kf) if mode_ok else {"ok": False}
         ok = ok and checks["claude_version"]["ok"] and checks["model"]["ok"] and mode_ok
+        ok = ok and checks["key_accepted"]["ok"]
         ok = ok and cfg.sandbox == "bwrap"
     if cfg.sandbox == "bwrap" and checks["bin:bwrap"]["found"]:
         sb.write_guard(cfg.home)
