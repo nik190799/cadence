@@ -189,7 +189,7 @@ AI-built work lands early; Nov 13 is fixed.
 |---|---|---|---|---|
 | 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Harness built (`eval/`); next: owner setup, a $0 stub run, then a pilot |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
-| 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | ~Nov 6 |
+| 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | ~Nov 6; 2026-10-03: two new public repos (`envguard`, Python; `cronspeak`, TypeScript) created with tests and green CI, 8 starter issues each, setup PRs #9 open and green; waiting on the App, the secrets and the merge |
 | 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
 | 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Preliminary search done; an attorney's opinion is next |
 
@@ -220,6 +220,10 @@ as the 2026-11-13 gate.
 |---|---|---|---|---|
 | 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | Done 2026-10-03: a fresh Flutter repo went from install to its first merged factory PR (a DST bug fix with a regression test, $0.48) with no hand edits to generated files; the lessons (pin the toolchain, a drifted formatter, LF scripts) are in the skills |
 | 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Done 2026-10-03: CI job `privacy` on every push and PR, plus a pre-push hook; the deny-list comes from a secret or `gh` at check time, never from the repo |
+| 11 | Boundary checker reads multi-line imports | A Prettier-wrapped `import {
+ x,
+} from '../describe/index.js'` is checked like a one-line import (today only the first line is read, so the learned check misses it) | A test with a multi-line TS import and a parenthesised Python import, both flagged | Found 2026-10-03 setting up a TypeScript repo |
+| 12 | Setup that strangers finish | `verify.sh` picks the first Python that can `import yaml` (or `CADENCE_PYTHON`), not just `python3`; the skill's `git add` list covers every file `/cadence-init` writes (`standards/`, `CLAUDE.md`, `.gitattributes`, formatter ignores); setup adds the copied files to the repo's formatter and linter ignores; `PATTERNS.md` template per stack (library, service, app) instead of the Flutter-style one; the profile accepts pip extras (`.[dev]`) | A fresh Python and a fresh TypeScript repo set up with no workaround | Found 2026-10-03 on `envguard` and `cronspeak` |
 
 **After Nov 13** (parked: useful, but outside phase 1):
 
