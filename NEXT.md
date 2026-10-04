@@ -187,7 +187,7 @@ AI-built work lands early; Nov 13 is fixed.
 
 | # | Priority | Plan step | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Preregistered 2026-10-04 (`claude-sonnet-5-5`; Q1 fail drops the claim, Q2 fail is "no gain"; pilot ceiling $50, gate budget set by amendment after the pilot). Next: the owner writes the key file in WSL, then `doctor --live` and the pilot |
+| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Gate run `gate-001` done 2026-10-04 (2 trials per a budget amendment, both arms, both epochs, scored, no harness errors). Verdict recorded against the signed rules in the private preregistration; results stay private. Next: the owner decides what it means for Nov 13 |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
 | 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | Met 2026-10-04: `envguard` and `cronspeak` each merged 3 factory PRs (6 tickets, all repo CI green; one full green `cadence/verify`) and a first retro lesson; keep feeding tickets toward item 4 |
 | 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
@@ -200,7 +200,7 @@ backlog below).
 
 | Criterion | Now |
 |---|---|
-| The learning loop beats frozen rules | Not measured yet (item 1) |
+| The learning loop beats frozen rules | Measured 2026-10-04 (private; see the preregistration verdict) |
 | Agent PRs merged within 30 days, at least 50% | 16 of 16: 10 on two private product repos, 6 on two public repos |
 | Median cost per ticket, at most $20 | $0.59 (highest $6.69, a ticket hit by the empty-key bug, since fixed) |
 | At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 2 of 2 (`envguard`, `cronspeak`) |
