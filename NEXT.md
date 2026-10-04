@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox; two private product repos run the factory (10 agent PRs, all merged); `/cadence-factory-setup` is proven on a fresh repo; the eval harness for the Nov 13 gate is in progress.
+**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox; two private product repos run the factory (10 agent PRs, all merged); `/cadence-factory-setup` is proven on a fresh repo; the eval harness for the Nov 13 gate is built (`eval/`) and waits on owner setup before its first live run.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -187,7 +187,7 @@ AI-built work lands early; Nov 13 is fixed.
 
 | # | Priority | Plan step | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | In progress |
+| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Harness built (`eval/`); next: owner setup, a $0 stub run, then a pilot |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
 | 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | ~Nov 6 |
 | 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
