@@ -64,7 +64,9 @@ missed:
 
 - Agent PRs merged within 30 days: at least 50%
 - Median cost per ticket: at most $20, under a hard cap
-- Outside use: at least 3 public repos with a committed `.cadence/cadence.yaml`
+- Public use: at least 2 public repos (the maintainer's own allowed) with a
+  committed `.cadence/cadence.yaml` and a merged factory PR (was 3 outside
+  repos until 2026-10-03; outside adoption is now a backlog item)
 - Unique edge: at least one retro rule that later caught a real repeat
 
 ## Layout

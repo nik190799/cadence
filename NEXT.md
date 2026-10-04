@@ -189,7 +189,7 @@ AI-built work lands early; Nov 13 is fixed.
 |---|---|---|---|---|
 | 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | In progress |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
-| 3 | Outside proof: replay 10–20 closed issues from one outside public repo, and reach 3 outside repos with a committed `.cadence/cadence.yaml` (needs backlog item 1) | Weeks 4–5 | Replay results recorded; 3 outside repos | ~Nov 6 |
+| 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | ~Nov 6 |
 | 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
 | 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Preliminary search done; an attorney's opinion is next |
 
@@ -203,7 +203,7 @@ backlog below).
 | The learning loop beats frozen rules | Not measured yet (item 1) |
 | Agent PRs merged within 30 days, at least 50% | 10 of 10, on two private product repos |
 | Median cost per ticket, at most $20 | $0.59 (highest $6.69, a ticket hit by the empty-key bug, since fixed) |
-| At least 3 outside public repos with a committed `.cadence/cadence.yaml` | 0 |
+| At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 0 |
 | At least 1 learned rule that caught a real repeat | 0 (the sandbox rule prevented a repeat at spec time, which does not count) |
 
 ## Product backlog: generic fixes for every factory user (added 2026-10-03)
@@ -231,6 +231,8 @@ as the 2026-11-13 gate.
 | 6 | Status issue per repo | A pinned "Factory status" issue, updated by every run and the hourly sweep: runs in progress, recent tickets with timing and cost, quality numbers, failures with reasons, learned rules and tuning advice. Per repo and per rule, never per developer |
 | 7 | Fleet page | One private page across all of a user's repos, built by a Cadence command from each repo's ledger |
 | 8 | Hosted portal | Live runs, team and organization views and tamper-evident evidence. Needs a server, so it waits for the hosted phase and its gates |
+| 9 | Outside adoption | 3 outside public repos with a committed `.cadence/cadence.yaml`, merged by their own maintainers; replay 10–20 closed issues from one outside repo first, to have results to show them (moved from the kill criteria on 2026-10-03) |
+| 10 | Factory mode on `main` | Merge `factory` into `main` so installed users get factory mode; clear the skill stubs first so nothing half-built ships. Waits for the directory review and the Nov 13 gate |
 
 What the live runs showed: a ticket's machine time is about 6.5 minutes (spec
 about 2, build to PR about 4.5), and most of the elapsed time is waiting for
@@ -256,9 +258,14 @@ file.
 ## Kill criteria (2026-11-13)
 
 Stop if the rules-on vs rules-frozen eval shows no gain, or if two of these miss:
-agent PRs merged within 30 days ≥ 50%; median cost per ticket ≤ $20; ≥ 3 outside
-public repos with a committed `.cadence/cadence.yaml`; ≥ 1 retro rule that later
-caught a real repeat.
+agent PRs merged within 30 days ≥ 50%; median cost per ticket ≤ $20; ≥ 2 public
+repos (the maintainer's own allowed) with a committed `.cadence/cadence.yaml` and
+a merged factory PR; ≥ 1 retro rule that later caught a real repeat.
+
+**Changed 2026-10-03:** the third criterion was "≥ 3 outside public repos". Outside
+adoption is not reachable by Nov 13 without stopping product work, so it moves to
+the backlog (item 9). The new criterion proves the factory runs in public on more
+than one codebase; it no longer proves outside demand.
 
 ## Known broken
 
