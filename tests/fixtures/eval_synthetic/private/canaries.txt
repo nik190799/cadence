@@ -1,0 +1,2 @@
+# Strings that exist only in the hidden harness.
+SYNTH-HIDDEN-CANARY-41f7

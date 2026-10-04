@@ -1,0 +1,17 @@
+# The stub agent for the synthetic fixture. Tickets 1 and 2 modify an
+# existing test file (a guarded path), so the learning loop promotes a
+# pattern after ticket 2. Ticket 2's intake asks questions first. Ticket 3
+# fails the gate at test, then passes on the retry.
+schema: cadence-eval.stubs/1
+cost_usd: 0.0
+intake:
+  default: spec
+  overrides:
+    demo-2: [questions, spec]
+build:
+  default: {try1: noop, try2: noop}
+  demo-1: {try1: {file: patches/t1.patch}}
+  demo-2: {try1: {file: patches/t2.patch}}
+  demo-3: {try1: {file: patches/t3-fail.patch}, try2: {file: patches/t3-pass.patch}}
+autopilot:
+  demo: {file: patches/ap.patch}

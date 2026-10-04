@@ -1,0 +1,7 @@
+# Gate commands for the synthetic demo app (bash only).
+commands:
+  format: []
+  lint: ["bash -n src/app.sh"]
+  test: ["bash tests/run.sh"]
+
+boundaries: []

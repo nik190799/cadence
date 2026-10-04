@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/stubs.schema.json",
+  "title": "Cadence factory eval: the stub agent (free dry runs)",
+  "description": "What the stub agent does in place of a model session. A source (SRC) is noop, a calibration diff of the repo's calib repo (base..branch minus excludes), or a patch file relative to this file's directory. Ticket keys are ticket file stems (<repo>-<n>) or ticket ids (<repo>.T<n>); autopilot keys are repo ids. A retry's (try2) patch is the whole result: the stub resets the working tree to BASE before applying it, while noop keeps the first attempt as it is. A patch that does not apply leaves an empty diff and a stub_not_applied flag.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "cost_usd", "intake", "build", "autopilot"],
+  "$defs": {
+    "src": {
+      "oneOf": [
+        {"const": "noop"},
+        {
+          "type": "object", "additionalProperties": false, "required": ["calib"],
+          "properties": {
+            "calib": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+            "exclude": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 255}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["file"],
+          "properties": {"file": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64}){0,3}\\.patch$"}}
+        }
+      ]
+    },
+    "build": {
+      "type": "object", "additionalProperties": false, "required": ["try1"],
+      "properties": {"try1": {"$ref": "#/$defs/src"}, "try2": {"$ref": "#/$defs/src"}}
+    },
+    "key": {"pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"}
+  },
+  "properties": {
+    "schema": {"const": "cadence-eval.stubs/1"},
+    "cost_usd": {"type": "number", "minimum": 0, "maximum": 1000},
+    "intake": {
+      "type": "object", "additionalProperties": false, "required": ["default"],
+      "properties": {
+        "default": {"enum": ["spec", "questions", "fail"]},
+        "overrides": {
+          "type": "object", "propertyNames": {"$ref": "#/$defs/key"},
+          "additionalProperties": {
+            "type": "array", "minItems": 1, "maxItems": 2,
+            "items": {"enum": ["spec", "questions", "fail"]}
+          }
+        }
+      }
+    },
+    "build": {
+      "type": "object", "required": ["default"],
+      "propertyNames": {"$ref": "#/$defs/key"},
+      "additionalProperties": {"$ref": "#/$defs/build"}
+    },
+    "autopilot": {
+      "type": "object", "propertyNames": {"$ref": "#/$defs/key"},
+      "additionalProperties": {"$ref": "#/$defs/src"}
+    }
+  }
+}

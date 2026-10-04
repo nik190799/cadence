@@ -1,0 +1,8 @@
+diff --git a/src/farewell.sh b/src/farewell.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..74c830b8588e2c57fb538e77ae1808369ee66c7b
+--- /dev/null
++++ b/src/farewell.sh
+@@ -0,0 +1,2 @@
++#!/usr/bin/env bash
++farewell() { echo "bye"; }

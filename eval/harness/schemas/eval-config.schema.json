@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/eval-config.schema.json",
+  "title": "Cadence factory eval: the private run configuration (eval.yaml)",
+  "description": "Relative paths resolve against the directory of the config file. Everything repo-specific lives in this private file, never in the public harness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "results_dir", "read_roots", "forbidden_path_parts", "never_bind", "cadence",
+    "claude_code_version", "sandbox", "caps", "timeouts_min", "factory", "logical_clock",
+    "concurrency", "budget_usd", "hidden_command", "repos", "files"
+  ],
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000-\\u001f]+$"},
+    "sha40": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "money": {"type": "number", "exclusiveMinimum": 0, "maximum": 100000},
+    "minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+    "relpath": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}(/[A-Za-z0-9_.-]{1,64}){0,5}$"
+    }
+  },
+  "properties": {
+    "schema": {"const": "cadence-eval.config/1"},
+    "home": {"$ref": "#/$defs/path"},
+    "results_dir": {"$ref": "#/$defs/path"},
+    "read_roots": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/path"}},
+    "forbidden_path_parts": {
+      "type": "array", "maxItems": 64,
+      "items": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\]+$"}
+    },
+    "never_bind": {
+      "type": "array", "maxItems": 64,
+      "items": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\\\]+$"}
+    },
+    "cadence": {
+      "type": "object", "additionalProperties": false, "required": ["repo", "sha"],
+      "properties": {"repo": {"$ref": "#/$defs/path"}, "sha": {"$ref": "#/$defs/sha40"}}
+    },
+    "claude_code_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "model": {"type": "string", "pattern": "^[A-Za-z0-9._:\\[\\]-]{0,100}$"},
+    "sandbox": {"enum": ["bwrap", "none"]},
+    "score_network": {"enum": ["offline", "online"]},
+    "allow_no_subprocess_scrub": {"type": "boolean"},
+    "caps": {
+      "type": "object", "additionalProperties": false,
+      "required": ["per_run_usd", "max_turns", "autopilot_usd_per_ticket", "autopilot_turns_per_ticket"],
+      "properties": {
+        "per_run_usd": {"$ref": "#/$defs/money"},
+        "max_turns": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "autopilot_usd_per_ticket": {"$ref": "#/$defs/money"},
+        "autopilot_turns_per_ticket": {"type": "integer", "minimum": 1, "maximum": 1000}
+      }
+    },
+    "timeouts_min": {
+      "type": "object", "additionalProperties": false,
+      "required": ["intake", "build", "gate", "learn_verify", "score", "autopilot"],
+      "properties": {
+        "intake": {"$ref": "#/$defs/minutes"},
+        "build": {"$ref": "#/$defs/minutes"},
+        "gate": {"$ref": "#/$defs/minutes"},
+        "learn_verify": {"$ref": "#/$defs/minutes"},
+        "score": {"$ref": "#/$defs/minutes"},
+        "autopilot": {"$ref": "#/$defs/minutes"}
+      }
+    },
+    "factory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "daily_usd", "retry_on_dod_fail", "promote_after", "guarded_paths", "test_roots", "classify"],
+      "properties": {
+        "mode": {"const": "eval-sandbox"},
+        "daily_usd": {"$ref": "#/$defs/money"},
+        "retry_on_dod_fail": {"enum": [0, 1]},
+        "promote_after": {"type": "integer", "minimum": 1, "maximum": 100},
+        "guarded_paths": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/relpath"}},
+        "test_roots": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/relpath"}},
+        "classify": {"const": false}
+      }
+    },
+    "logical_clock": {
+      "type": "object", "additionalProperties": false, "required": ["epoch", "slot_hours"],
+      "properties": {
+        "epoch": {"type": "integer", "minimum": 946684800, "maximum": 4102444800},
+        "slot_hours": {"type": "integer", "minimum": 3, "maximum": 48}
+      }
+    },
+    "concurrency": {
+      "type": "object", "additionalProperties": false, "required": ["sessions", "score_workers"],
+      "properties": {
+        "sessions": {"type": "integer", "minimum": 1, "maximum": 32},
+        "score_workers": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    },
+    "budget_usd": {"type": "number", "minimum": 0, "maximum": 1000000},
+    "hidden_command": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 512}
+    },
+    "repos": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "slug", "source", "sha", "overlay_dir", "tickets", "hidden"],
+        "properties": {
+          "id": {"$ref": "#/$defs/name"},
+          "slug": {"type": "string", "pattern": "^eval/[A-Za-z0-9_.-]{1,100}$"},
+          "source": {"$ref": "#/$defs/path"},
+          "sha": {"$ref": "#/$defs/sha40"},
+          "overlay_dir": {"$ref": "#/$defs/path"},
+          "tickets": {"type": "array", "minItems": 1, "maxItems": 99, "items": {"$ref": "#/$defs/name"}},
+          "hidden": {
+            "type": "object", "additionalProperties": false,
+            "required": ["harness_dir", "lib_dir", "entry"],
+            "properties": {
+              "harness_dir": {"$ref": "#/$defs/path"},
+              "lib_dir": {"$ref": "#/$defs/path"},
+              "entry": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+              "extra_args": {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 256}}
+            }
+          },
+          "calib": {
+            "type": ["object", "null"], "additionalProperties": false,
+            "required": ["repo", "base", "branches"],
+            "properties": {
+              "repo": {"$ref": "#/$defs/path"},
+              "base": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"},
+              "branches": {
+                "type": "object", "maxProperties": 32,
+                "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+                "additionalProperties": {
+                  "type": "object", "additionalProperties": false,
+                  "properties": {"exclude": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 255}}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tickets_dir", "replies", "reviewer", "stubs", "checks", "detectors", "expectations", "canaries"],
+      "properties": {
+        "tickets_dir": {"$ref": "#/$defs/path"},
+        "replies": {"$ref": "#/$defs/path"},
+        "reviewer": {"$ref": "#/$defs/path"},
+        "stubs": {"$ref": "#/$defs/path"},
+        "checks": {"$ref": "#/$defs/path"},
+        "detectors": {"$ref": "#/$defs/path"},
+        "expectations": {"$ref": "#/$defs/path"},
+        "canaries": {"$ref": "#/$defs/path"},
+        "denylist": {"$ref": "#/$defs/path"}
+      }
+    }
+  }
+}

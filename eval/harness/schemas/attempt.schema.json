@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/attempt.schema.json",
+  "title": "Cadence factory eval: one ticket attempt (or one autopilot session)",
+  "description": "Written by the runner after each factory ticket (arms F0, F1) and each autopilot session (arm A0). The hidden block is filled in by scoring, which never feeds back into chains, state or prompts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "arm", "trial", "epoch", "repo", "ticket", "issue", "chain",
+    "base_sha", "agent_mode", "model", "times", "sessions", "intake", "tries", "retry",
+    "publish", "review", "ledger", "learn", "retro_paths", "hidden", "flags", "outcome"
+  ],
+  "$defs": {
+    "sha40": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "sha64": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "ts": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "usd": {"type": ["number", "null"], "minimum": 0},
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "run_id", "exit", "subtype", "is_error", "total_cost_usd", "num_turns",
+                   "duration_ms", "booked_usd", "cost_source", "voids", "timeout"],
+      "properties": {
+        "role": {"enum": ["intake", "intake2", "build", "retry", "autopilot"]},
+        "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "exit": {"type": ["integer", "null"]},
+        "subtype": {"type": ["string", "null"], "maxLength": 100},
+        "is_error": {"type": ["boolean", "null"]},
+        "total_cost_usd": {"$ref": "#/$defs/usd"},
+        "num_turns": {"type": ["integer", "null"], "minimum": 0},
+        "duration_ms": {"type": ["number", "null"], "minimum": 0},
+        "booked_usd": {"$ref": "#/$defs/usd"},
+        "cost_source": {"type": ["string", "null"], "maxLength": 64},
+        "voids": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 200}},
+        "timeout": {"type": "boolean"},
+        "flags": {"type": "array", "items": {"type": "string", "maxLength": 100}}
+      }
+    },
+    "try": {
+      "type": "object", "additionalProperties": false,
+      "required": ["n", "patch_sha256", "bytes", "files", "apply_status", "verdict", "failed_step",
+                   "step_word", "guarded", "gate_tree"],
+      "properties": {
+        "n": {"enum": [1, 2]},
+        "patch_sha256": {"$ref": "#/$defs/sha64"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "files": {"type": "array", "items": {"type": "string", "maxLength": 1024}},
+        "apply_status": {"enum": ["ok", "empty", "missing", "failed", null]},
+        "verdict": {"enum": ["pass", "fail", "unfinished", "skipped", null]},
+        "failed_step": {"type": ["string", "null"], "maxLength": 300},
+        "step_word": {"type": ["string", "null"], "maxLength": 32},
+        "guarded": {"type": ["string", "null"], "maxLength": 2000},
+        "gate_tree": {"$ref": "#/$defs/sha40"},
+        "job_result": {"enum": ["success", "failure", "cancelled", "skipped", null]},
+        "observed": {"type": "boolean"},
+        "flags": {"type": "array", "items": {"type": "string", "maxLength": 100}}
+      }
+    },
+    "hiddenref": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "properties": {
+        "tree": {"$ref": "#/$defs/sha40"},
+        "key": {"type": "string", "maxLength": 300},
+        "score_file": {"type": "string", "maxLength": 500},
+        "status": {"enum": ["queued", "ok", "harness-error", "timeout", "infra-failed"]},
+        "exit": {"type": ["integer", "null"]},
+        "pass": {"type": ["integer", "null"]},
+        "fail": {"type": ["integer", "null"]},
+        "fraction": {"type": ["number", "null"]},
+        "repo_pass": {"type": ["boolean", "null"]},
+        "ticket_pass": {"type": ["boolean", "null"]},
+        "install_failed": {"type": "boolean"}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "cadence-eval.attempt/1"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "arm": {"enum": ["A0", "F0", "F1"]},
+    "trial": {"type": "integer", "minimum": 1, "maximum": 9},
+    "epoch": {"enum": [1, 2]},
+    "repo": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "ticket": {"type": ["string", "null"], "maxLength": 80},
+    "issue": {"type": ["integer", "null"], "minimum": 1},
+    "chain": {"type": "string", "pattern": "^(A0|F0|F1)-t[1-9]-[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "base_sha": {"$ref": "#/$defs/sha40"},
+    "agent_mode": {"enum": ["stub", "live"]},
+    "model": {"type": "string", "maxLength": 100},
+    "times": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logical_start", "logical_end", "wall_start", "wall_end"],
+      "properties": {
+        "logical_start": {"$ref": "#/$defs/ts"},
+        "logical_end": {"$ref": "#/$defs/ts"},
+        "wall_start": {"$ref": "#/$defs/ts"},
+        "wall_end": {"$ref": "#/$defs/ts"}
+      }
+    },
+    "sessions": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/session"}},
+    "intake": {
+      "type": "object", "additionalProperties": false,
+      "required": ["shape", "reran", "outcome", "spec_sha256"],
+      "properties": {
+        "shape": {"enum": ["spec", "questions", "none", null]},
+        "reran": {"type": "boolean"},
+        "outcome": {"enum": ["approved", "needs-human", "failed", "not-run"]},
+        "spec_sha256": {"$ref": "#/$defs/sha64"}
+      }
+    },
+    "tries": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/try"}},
+    "retry": {
+      "type": "object", "additionalProperties": false, "required": ["eligible", "granted", "why"],
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "granted": {"type": "boolean"},
+        "why": {"type": ["string", "null"], "maxLength": 64}
+      }
+    },
+    "publish": {
+      "type": "object", "additionalProperties": false,
+      "required": ["outcome", "try", "published_sha", "pr", "cadence_verify"],
+      "properties": {
+        "outcome": {"enum": ["pr-open", "dod-failed", "needs-human", "not-built", null]},
+        "try": {"enum": [1, 2, null]},
+        "published_sha": {"$ref": "#/$defs/sha40"},
+        "pr": {"type": ["integer", "null"], "minimum": 1},
+        "cadence_verify": {"enum": ["success", "action_required", null]},
+        "step_word": {"type": ["string", "null"], "maxLength": 32}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false, "required": ["merged", "merged_sha"],
+      "properties": {"merged": {"type": "boolean"}, "merged_sha": {"$ref": "#/$defs/sha40"}}
+    },
+    "ledger": {
+      "type": "object", "additionalProperties": false, "required": ["run_ids", "booked_usd"],
+      "properties": {
+        "run_ids": {"type": "array", "items": {"type": "string", "maxLength": 128}},
+        "booked_usd": {"$ref": "#/$defs/usd"},
+        "reported_usd": {"$ref": "#/$defs/usd"}
+      }
+    },
+    "learn": {
+      "type": "object", "additionalProperties": false,
+      "required": ["harvest", "plan_sha", "changed", "transitions", "applied", "demoted", "failed", "retro_merged", "retro_sha"],
+      "properties": {
+        "harvest": {"type": ["object", "null"]},
+        "plan_sha": {"$ref": "#/$defs/sha64"},
+        "changed": {"type": "boolean"},
+        "transitions": {"type": "array", "maxItems": 64, "items": {"type": "object"}},
+        "applied": {"type": "boolean"},
+        "demoted": {"type": "boolean"},
+        "failed": {"type": "boolean"},
+        "retro_merged": {"type": "boolean"},
+        "retro_sha": {"$ref": "#/$defs/sha40"},
+        "retro_pr": {"type": ["integer", "null"]},
+        "steps": {"type": "object"}
+      }
+    },
+    "retro_paths": {
+      "type": "object", "additionalProperties": false, "required": ["before", "after", "changed_by"],
+      "properties": {
+        "before": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
+        "after": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
+        "changed_by": {"type": "array", "items": {"enum": ["agent-merge", "retro-merge", "e2-reset"]}}
+      }
+    },
+    "hidden": {
+      "type": "object", "additionalProperties": false, "required": ["merged", "shadow_try1", "shadow_try2", "ticket_pass"],
+      "properties": {
+        "merged": {"$ref": "#/$defs/hiddenref"},
+        "shadow_try1": {"$ref": "#/$defs/hiddenref"},
+        "shadow_try2": {"$ref": "#/$defs/hiddenref"},
+        "ticket_pass": {"type": ["boolean", "null"]}
+      }
+    },
+    "flags": {
+      "type": "object", "additionalProperties": false,
+      "required": ["canary", "invariant", "tool_drift", "install_failed"],
+      "properties": {
+        "canary": {"type": "boolean"},
+        "invariant": {"type": "boolean"},
+        "tool_drift": {"type": "boolean"},
+        "install_failed": {"type": "boolean"},
+        "infra_failed": {"type": "boolean"},
+        "stub_not_applied": {"type": "boolean"},
+        "notes": {"type": "array", "items": {"type": "string", "maxLength": 500}}
+      }
+    },
+    "outcome": {"enum": ["pr-open", "dod-failed", "needs-human", "not-built", "infra-failed", "autopilot"]}
+  }
+}

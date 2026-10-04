@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/expectations.schema.json",
+  "title": "Cadence factory eval: calibration expectations",
+  "description": "What prepare's calibration must observe. A count left out is not checked. calib: the pinned commit plus a calibration diff. seed_plus: the seed plus a calibration diff (proves the scaffolding breaks no hidden check).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repos"],
+  "$defs": {
+    "result": {
+      "type": "object", "additionalProperties": false, "required": ["exit"],
+      "properties": {
+        "exit": {"type": "integer", "minimum": 0, "maximum": 255},
+        "pass": {"type": "integer", "minimum": 0},
+        "fail": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "cadence-eval.expectations/1"},
+    "repos": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["seed_verify", "pristine"],
+        "properties": {
+          "seed_verify": {"enum": ["pass", "fail"]},
+          "pristine": {"$ref": "#/$defs/result"},
+          "calib": {"type": "object", "additionalProperties": {"$ref": "#/$defs/result"}},
+          "seed_plus": {"type": "object", "additionalProperties": {"$ref": "#/$defs/result"}}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/replies.schema.json",
+  "title": "Cadence factory eval: the scripted answer to intake questions",
+  "description": "One generic paragraph, appended to the issue body when intake asks questions the first time. Identical in every arm.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "questions_reply"],
+  "properties": {
+    "schema": {"const": "cadence-eval.replies/1"},
+    "questions_reply": {"type": "string", "minLength": 1, "maxLength": 4000}
+  }
+}

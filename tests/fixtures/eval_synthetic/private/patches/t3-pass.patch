@@ -1,0 +1,18 @@
+diff --git a/src/c.sh b/src/c.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb454daaf7ecabcba6c9a7a544a1cd40f683b445
+--- /dev/null
++++ b/src/c.sh
+@@ -0,0 +1,2 @@
++#!/usr/bin/env bash
++feature_c() { echo "c"; }
+diff --git a/tests/test_c.sh b/tests/test_c.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..4753eda4f33d49443947de32ed170667095b519f
+--- /dev/null
++++ b/tests/test_c.sh
+@@ -0,0 +1,4 @@
++#!/usr/bin/env bash
++set -e
++source src/c.sh
++[ "$(feature_c)" = "c" ]

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/reviewer.schema.json",
+  "title": "Cadence factory eval: the scripted reviewer",
+  "description": "merge: published-unchanged merges every published PR as it is (a fast-forward). forbids: /cadence-forbid lines the reviewer posts on every agent PR before the merge, identical in every arm.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "merge", "forbids"],
+  "properties": {
+    "schema": {"const": "cadence-eval.reviewer/1"},
+    "merge": {"const": "published-unchanged"},
+    "forbids": {
+      "type": "array", "maxItems": 16,
+      "items": {"type": "string", "pattern": "^/cadence-forbid [A-Za-z0-9_./-]{1,200} -> [A-Za-z0-9_./:@-]{1,200}$"}
+    }
+  }
+}

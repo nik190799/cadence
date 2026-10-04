@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/run.schema.json",
+  "title": "Cadence factory eval: one run's pins",
+  "description": "Everything that must be identical to reproduce or audit the run: the Cadence commit, the plugin tree, the workflow pieces, the toolchain, the harness files and the configuration and preregistration hashes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "agent_mode", "sandbox", "created_at", "cadence_sha", "plugin_tree",
+    "pieces", "claude_code_version", "model", "node", "venv", "harness", "config_sha256",
+    "preregistration_sha256", "arms", "trials", "epochs", "repos", "voids", "allow_no_subprocess_scrub"
+  ],
+  "properties": {
+    "schema": {"const": "cadence-eval.run/1"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "agent_mode": {"enum": ["stub", "live"]},
+    "sandbox": {"enum": ["bwrap", "none"]},
+    "created_at": {"type": "string"},
+    "cadence_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "plugin_tree": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "pieces": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "claude_code_version": {"type": "string"},
+    "model": {"type": "string"},
+    "node": {"type": ["string", "null"]},
+    "venv": {"type": ["string", "null"]},
+    "harness": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preregistration_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "arms": {"type": "array", "items": {"enum": ["A0", "F0", "F1"]}},
+    "trials": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 9}},
+    "epochs": {"enum": [1, 2]},
+    "repos": {"type": "array", "items": {"type": "string"}},
+    "voids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "allow_no_subprocess_scrub": {"type": "boolean"},
+    "nested_bwrap": {"type": ["boolean", "null"]},
+    "seeds": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{40}$"}},
+    "status": {"enum": ["running", "done", "budget-stopped", "failed"]},
+    "updated_at": {"type": "string"}
+  }
+}

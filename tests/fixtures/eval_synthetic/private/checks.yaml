@@ -1,0 +1,10 @@
+schema: cadence-eval.checks/1
+repos:
+  demo:
+    denominator: [greets, farewell, shout, feature c, tamper check]
+    labels:
+      greets: {kind: regression}
+      farewell: {kind: owned, tickets: [demo-1]}
+      shout: {kind: owned, tickets: [demo.T2]}
+      feature c: {kind: owned, tickets: [demo-3]}
+      tamper check: {kind: noticing, tamper: true}

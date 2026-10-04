@@ -1,0 +1,5 @@
+schema: cadence-eval.replies/1
+questions_reply: >-
+  No further detail is available. Write the spec from the issue and the
+  repository, choose the smallest reasonable behaviour, and list each
+  assumption.

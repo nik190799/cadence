@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cadence.invalid/eval/schemas/score.schema.json",
+  "title": "Cadence factory eval: one hidden scoring of one tree",
+  "description": "Cached by repo, tree and harness sha. Scores never reach state, ghstore, chains or prompts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "repo", "tree", "harness_sha256", "status", "exit", "checks", "info", "summary",
+               "denominator", "pass", "fail", "fraction", "repo_pass", "install_failed", "tries", "scored_at"],
+  "properties": {
+    "schema": {"const": "cadence-eval.score/1"},
+    "repo": {"type": "string"},
+    "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "harness_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"enum": ["ok", "harness-error", "timeout", "infra-failed"]},
+    "exit": {"type": ["integer", "null"]},
+    "checks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["result"],
+        "properties": {
+          "result": {"enum": ["PASS", "FAIL"]},
+          "detail": {"type": ["string", "null"]},
+          "printed": {"type": "boolean"},
+          "in_denominator": {"type": "boolean"}
+        }
+      }
+    },
+    "info": {"type": "array", "items": {"type": "object"}},
+    "summary": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "properties": {"pass": {"type": "integer"}, "fail": {"type": "integer"}}
+    },
+    "denominator": {"type": "integer", "minimum": 0},
+    "pass": {"type": "integer", "minimum": 0},
+    "fail": {"type": "integer", "minimum": 0},
+    "fraction": {"type": ["number", "null"]},
+    "repo_pass": {"type": "boolean"},
+    "install_failed": {"type": "boolean"},
+    "tries": {"type": "integer", "minimum": 1},
+    "scored_at": {"type": "string"},
+    "kind": {"type": ["string", "null"]}
+  }
+}

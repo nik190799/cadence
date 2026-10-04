@@ -1,0 +1,5 @@
+schema: cadence-eval.expectations/1
+repos:
+  demo:
+    seed_verify: pass
+    pristine: {exit: 1, pass: 2, fail: 3}
