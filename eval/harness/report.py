@@ -213,15 +213,21 @@ def run_metrics(cfg: Config, run_id: str, *, log: Callable[[str], None] = print)
         final = read_json(finals[-1])
         main_dir = box.work / "mains" / name
         _materialize(cfg, info["repo"], results / final["patch"], final["tree"], main_dir, cfg.clock_epoch)
-        target = out_dir / f"metrics-{name}.json"
+        # metrics.py writes inside the box (results/ may sit on a path the sandbox
+        # hides, such as /mnt under WSL); the file is copied out afterwards.
+        target = box.work / "out" / f"metrics-{name}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
         res = box.run(wfm.tool_argv(tools, "metrics.py report", "report", "--state-dir", box.inside(states["final"][name]),
                                     "--repo-root", box.inside(main_dir), "--order", "time", "--window", "0",
                                     "--now", str(final["end"]), "--out", box.inside(target)), timeout=600)
         out["metrics"][name] = {"exit": res.exit}
+        if target.is_file():
+            shutil.copy2(target, out_dir / target.name)
         if res.exit not in (0, 1):
             log(f"report: metrics.py report {name} exited {res.exit}: {res.stderr.decode(errors='replace')[-300:]}")
-    ticket_map = out_dir / "ticket-map.json"
+    ticket_map = box.work / "ticket-map.json"
     write_json(ticket_map, build_ticket_map(cfg, results))
+    shutil.copy2(ticket_map, out_dir / ticket_map.name)
     seed_yaml = box.work / "factory.yaml"
     from seed import render_factory_yaml
 
@@ -234,7 +240,8 @@ def run_metrics(cfg: Config, run_id: str, *, log: Callable[[str], None] = print)
         frozen = [p for n, p in sorted(group.items()) if n.startswith("F0-")]
         if not on or not frozen:
             continue
-        target = out_dir / f"compare-{tag}.json"
+        target = box.work / "out" / f"compare-{tag}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
         argv = ["compare"]
         for p in on:
             argv += ["--on", box.inside(p)]
@@ -246,6 +253,8 @@ def run_metrics(cfg: Config, run_id: str, *, log: Callable[[str], None] = print)
                  "--config", box.inside(seed_yaml), "--out", box.inside(target)]
         res = box.run(wfm.tool_argv(tools, "metrics.py compare", *argv), timeout=1800)
         out["compare"][tag] = {"exit": res.exit}
+        if target.is_file():
+            shutil.copy2(target, out_dir / target.name)
         if res.exit not in (0, 1):
             log(f"report: metrics.py compare {tag} exited {res.exit}: {res.stderr.decode(errors='replace')[-400:]}")
     sb.rmtree(root)

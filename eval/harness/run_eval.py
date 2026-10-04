@@ -159,6 +159,9 @@ def doctor(cfg: Config, live: bool) -> tuple[bool, dict[str, Any]]:
         ok = ok and cfg.sandbox == "bwrap"
     if cfg.sandbox == "bwrap" and checks["bin:bwrap"]["found"]:
         sb.write_guard(cfg.home)
+        # The agent profile binds this copy over /etc/resolv.conf; without it the
+        # DNS probe fails on WSL until prepare has run once.
+        sb.copy_resolv(cfg.home)
         root = cfg.home / "work" / "_doctor"
         sb.rmtree(root)
         private_paths = [str(Path.home()), str(cfg.results_dir), str(cfg.dir)]
