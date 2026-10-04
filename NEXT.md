@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox; two private product repos run the factory (10 agent PRs, all merged); `/cadence-factory-setup` is proven on a fresh repo; the eval harness for the Nov 13 gate is built (`eval/`) and waits on owner setup before its first live run.
+**Updated:** 2026-10-04 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox and has learned its first lessons on two public repos; four repos run the factory (16 agent PRs, all merged); `/cadence-factory-setup` is proven on three fresh repos; the eval is preregistered and waits on the pilot.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -187,9 +187,9 @@ AI-built work lands early; Nov 13 is fixed.
 
 | # | Priority | Plan step | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | WSL setup done (bubblewrap, venv, Node 22, Claude Code 2.1.233); doctor ok; prepare calibration matches `expectations.yaml`; $0 stub run `stub-001` matches the runbook (Q1 0.076, 4 false blocks). Next: owner review and preregistration, then the pilot |
+| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Preregistered 2026-10-04 (`claude-sonnet-5-5`; Q1 fail drops the claim, Q2 fail is "no gain"; pilot ceiling $50, gate budget set by amendment after the pilot). Next: the owner writes the key file in WSL, then `doctor --live` and the pilot |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
-| 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | ~Nov 6; 2026-10-04: `envguard` and `cronspeak` merged their setup PRs; smoke tests green; first tickets (#1 each) specced, approved and built: draft PRs #10, `cadence/verify` action_required (see backlog 13), repo CI green; waiting on review and merge |
+| 3 | Public proof: run the factory on 2 of the maintainer's own public repos (setup with `/cadence-factory-setup`, then real tickets), so specs, PRs and costs can be linked in public | Weeks 4–5 | 2 public repos with a committed `.cadence/cadence.yaml` and at least one merged factory PR each | Met 2026-10-04: `envguard` and `cronspeak` each merged 3 factory PRs (6 tickets, all repo CI green; one full green `cadence/verify`) and a first retro lesson; keep feeding tickets toward item 4 |
 | 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
 | 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Preliminary search done; an attorney's opinion is next |
 
@@ -201,9 +201,9 @@ backlog below).
 | Criterion | Now |
 |---|---|
 | The learning loop beats frozen rules | Not measured yet (item 1) |
-| Agent PRs merged within 30 days, at least 50% | 10 of 10, on two private product repos |
+| Agent PRs merged within 30 days, at least 50% | 16 of 16: 10 on two private product repos, 6 on two public repos |
 | Median cost per ticket, at most $20 | $0.59 (highest $6.69, a ticket hit by the empty-key bug, since fixed) |
-| At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 0 |
+| At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 2 of 2 (`envguard`, `cronspeak`) |
 | At least 1 learned rule that caught a real repeat | 0 (the sandbox rule prevented a repeat at spec time, which does not count) |
 
 ## Product backlog: generic fixes for every factory user (added 2026-10-03)
@@ -224,7 +224,7 @@ as the 2026-11-13 gate.
  x,
 } from '../describe/index.js'` is checked like a one-line import (today only the first line is read, so the learned check misses it) | A test with a multi-line TS import and a parenthesised Python import, both flagged | Found 2026-10-03 setting up a TypeScript repo |
 | 12 | Setup that strangers finish | `verify.sh` picks the first Python that can `import yaml` (or `CADENCE_PYTHON`), not just `python3`; the skill's `git add` list covers every file `/cadence-init` writes (`standards/`, `CLAUDE.md`, `.gitattributes`, formatter ignores); setup adds the copied files to the repo's formatter and linter ignores; `PATTERNS.md` template per stack (library, service, app) instead of the Flutter-style one; the profile accepts pip extras (`.[dev]`) | A fresh Python and a fresh TypeScript repo set up with no workaround | Found 2026-10-03 on `envguard` and `cronspeak` |
-| 13 | Regression tests in an existing test file are never gate-run | A bug fix whose regression test is added to an existing test file (the natural place) ends `action_required`: guarded files are restored before the gate, so the new test runs only in the repo's own CI. Options: run the agent's version of guarded test files after the restored ones pass, as an extra gate step that may only add passing tests; or let the spec name a new test file under a test root | Both first public tickets (envguard#10, cronspeak#10) gate-run their new tests | Found 2026-10-04 on the first two public tickets |
+| 13 | Regression tests in an existing test file are never gate-run | A bug fix whose regression test is added to an existing test file (the natural place) ends `action_required`: guarded files are restored before the gate, so the new test runs only in the repo's own CI. Options: run the agent's version of guarded test files after the restored ones pass, as an extra gate step that may only add passing tests; or let the spec name a new test file under a test root | Both first public tickets (envguard#10, cronspeak#10) gate-run their new tests | Found 2026-10-04 on the first two public tickets. 2026-10-04: the learning loop found this itself: both public repos promoted a pattern "do not modify existing files under the test root; the gate restores them" (envguard L-b0eb2df1, cronspeak L-9c6f6eb9), merged; cronspeak#13, whose tests went in a new file, got a full green gate |
 
 **After Nov 13** (parked: useful, but outside phase 1):
 
