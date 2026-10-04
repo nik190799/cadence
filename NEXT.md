@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: phase 1a live in the sandbox, phase 1b (learning loop) built and smoke-tested live; the DoD retry, the retro fallback and SHA pins built, not yet run live; on `factory-1e`, a green run on a failed gate and the learn chain in build runs, now proven live; on `factory-1f`, nested guarded paths (found preparing the product repo), not yet run live; on `factory-1g`, a key check in every model job (live finding in the product repo: an empty `ANTHROPIC_API_KEY` was booked at the cap), not yet run live.
+**Updated:** 2026-10-03 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox; two private product repos run the factory (10 agent PRs, all merged); `/cadence-factory-setup` is proven on a fresh repo; the eval harness for the Nov 13 gate is in progress.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -169,12 +169,12 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 
 **2026-10-03, first real product repo** (private, open beta). Setup PR (`19f1bcb`): workflow rendered from `a312862` with the product repo's runtime, gate = ci.yml's server/web/cli checks + the resolve_pass() guard, $2/run, $6/day, `server/tests` guarded (nested guarded paths, `a312862`, were built for this). Local `verify.sh` and the product repo's own CI pass on the branch. Variables and labels set. Starter issues #2-#6: regression tests. **Owner steps before the first ticket:** merge #1, install the App on a private product repo, add the three secrets (a new App private key and possibly a new Anthropic key, since both files were deleted). Then label one issue `factory`.
 
-**2026-10-03, live finding in the product repo: an empty API key spent the day's budget** (fixed on `factory-1g`; tests only, not yet run live). In a private product repo the `ANTHROPIC_API_KEY` secret existed but was empty. Three spec runs failed inside `anthropics/claude-code-action` ("Environment variable validation failed: Either ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or workload identity federation ... is required"). The model was never called, yet `ledger` booked each run at the full per-run cap ($2 each, $6 total, the whole $6 day), so the first real build was refused; the issue got no explanation (the run was red, the issue just kept its `factory` label). Fix:
+**2026-10-03, live finding in the product repo: an empty API key spent the day's budget** (fixed on `factory-1g`, now on `factory` and installed in the product repo). In a private product repo the `ANTHROPIC_API_KEY` secret existed but was empty. Three spec runs failed inside `anthropics/claude-code-action` ("Environment variable validation failed: Either ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or workload identity federation ... is required"). The model was never called, yet `ledger` booked each run at the full per-run cap ($2 each, $6 total, the whole $6 day), so the first real build was refused; the issue got no explanation (the run was red, the issue just kept its `factory` label). Fix:
 - **Check first.** `intake`, `agent`, `agent-retry` and `classify` start with one identical step, "Check the Anthropic key is set": the secret reaches it through `env` only, and it reads only the key's length and whether it holds whitespace (never prints, compares or writes the value). A missing, empty or whitespace-holding key writes `key=missing`, prints an `::error::` naming the secret, the fix (`gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>`) and that a secret can be checked only by its length, and fails the job. The model step runs only on `key=ok`.
 - **Book $0, only for that.** Each model job outputs `preflight: no-key` only when that step failed with `key=missing` and the model step was skipped (tier A: written before any model or agent code runs). `ledger` (the run and the retry) and `learn-record` (classify) pass `ledger.py record --preflight no-key` only for a failed job with that exact output and no result file: $0, `cost_source` `preflight:no-key`. `ledger.py` refuses `--preflight` with any outcome but `failure`, with a cost, turns, a result file, a PR or a published sha. Every other unreported cost still books the cap.
 - **Say so once.** `publish` (which now also runs when `intake` failed its key check) posts one fixed comment: the factory could not run because `ANTHROPIC_API_KEY` is missing or empty, how to set it, how to check it by length, that no budget was spent, and how to try again; then labels `needs-human` (which also stops the reconciler's spec retry). "The build agent did not finish" is not posted on top. A retry whose key check failed is told in the `dod-failed` report instead (the first attempt did spend).
 - Docs: the key check in [docs/FACTORY.md](docs/FACTORY.md); how to check a secret by its length in [docs/factory-sandbox-setup.md](docs/factory-sandbox-setup.md).
-- **Next (owner):** set the product repo's key from your own terminal (`gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>`, paste at the prompt), install `factory-1g` there, and check the next model run prints a length of about 100. Today's three $2 records stay on `cadence/state` (records are never changed), so the day's budget recovers at 00:00 UTC.
+- **Done:** the key was set and the product repo's tickets have run since.
 
 ## Priority to the Nov 13 gate (updated 2026-10-03)
 
@@ -187,14 +187,24 @@ AI-built work lands early; Nov 13 is fixed.
 
 | # | Priority | Plan step | Done when | Target (flexible) |
 |---|---|---|---|---|
-| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | Start now |
+| 1 | Eval harness: the factory against a plain agent run, and rules-on against rules-frozen, on the private assessment repos (same tickets, same model, 3 trials each), scored by their hidden tests | Weeks 1–2 gate; weeks 4–5 | Both comparisons produce numbers for every kill-criteria metric | In progress |
 | 2 | One public, measured result | Week 3 gate | A write-up with real numbers that names no private repo (assessment results stay private) | ~Oct 19–23 |
 | 3 | Outside proof: replay 10–20 closed issues from one outside public repo, and reach 3 outside repos with a committed `.cadence/cadence.yaml` (needs backlog item 1) | Weeks 4–5 | Replay results recorded; 3 outside repos | ~Nov 6 |
-| 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6 |
-| 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Soon |
+| 4 | 20+ real tickets on a product repo, toward a learned rule that catches a real repeat | Week 3; weeks 4–5 | 20+ tickets, with repeat and escape rates measured | ~Nov 6; 10 so far |
+| 5 | Week-0 leftover: a trademark check on the "Cadence" name | Week 0 | The opinion is recorded | Preliminary search done; an attorney's opinion is next |
 
 Product changes that feed none of these wait until after the gate (see the
 backlog below).
+
+**Scoreboard on 2026-10-03,** against the kill criteria below:
+
+| Criterion | Now |
+|---|---|
+| The learning loop beats frozen rules | Not measured yet (item 1) |
+| Agent PRs merged within 30 days, at least 50% | 10 of 10, on two private product repos |
+| Median cost per ticket, at most $20 | $0.59 (highest $6.69, a ticket hit by the empty-key bug, since fixed) |
+| At least 3 outside public repos with a committed `.cadence/cadence.yaml` | 0 |
+| At least 1 learned rule that caught a real repeat | 0 (the sandbox rule prevented a repeat at spec time, which does not count) |
 
 ## Product backlog: generic fixes for every factory user (added 2026-10-03)
 
