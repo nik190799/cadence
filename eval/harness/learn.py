@@ -258,7 +258,10 @@ def retro_publish(t: "Ticket", plan: dict[str, Any]) -> dict[str, Any]:
 def retro_failed(t: "Ticket", plan: dict[str, Any]) -> None:
     chain, wf = t.chain, t.env.wf
     root, ws = t.job("retro-failed")
-    ws.mkdir(parents=True, exist_ok=True)
+    # The record step runs in `state/` (the job's checkout of cadence/state on
+    # GitHub); the emulated piece writes only to RETRO_OUT, but bwrap still
+    # needs the directory to exist to chdir into it.
+    (ws / "state").mkdir(parents=True, exist_ok=True)
     box = chain.box("tools", root)
     target = box.temp / "retro-failed.json"
     now = t.at("retro-publish")
