@@ -9,6 +9,17 @@
 root="$(git rev-parse --show-toplevel)"
 py="$(command -v python3 || command -v python)"
 input="$(cat)"
+
+# `main` is frozen until the plugin is approved and published in the Claude
+# plugin directory, which tracks `main` (NEXT.md, "Do not"). Refuse any push
+# that updates or deletes it; set CADENCE_ALLOW_MAIN_PUSH=1 for the release.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ] && [ "${CADENCE_ALLOW_MAIN_PUSH:-}" != "1" ]; then
+    echo "pre-push: refusing to push to main: it is frozen until the plugin is published (NEXT.md, \"Do not\")." >&2
+    echo "pre-push: to release, re-run with CADENCE_ALLOW_MAIN_PUSH=1." >&2
+    exit 1
+  fi
+done <<< "$input"
 script="$root/scripts/privacy_check.py"
 tmp=""
 if [ ! -f "$script" ]; then

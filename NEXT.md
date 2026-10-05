@@ -1,6 +1,6 @@
 # Next — Cadence
 
-**Updated:** 2026-10-04 · **State:** v0.3.0-rc.2 on `main`, release **held**. Factory mode: the learning loop is proven live in the eval sandbox and has learned its first lessons on two public repos; four repos run the factory (16 agent PRs, all merged); `/cadence-factory-setup` is proven on three fresh repos; the eval is preregistered and waits on the pilot.
+**Updated:** 2026-10-05 · **State:** v0.3.0-rc.2 on `main`, release **held** for the directory review. Factory mode: the preregistered eval `gate-001` finished, and under the signed rules the learning-loop kill condition is **met**. The recommendation is to stop factory mode at the 2026-11-13 gate; the decision is pending with the maintainer. Details: [docs/factory-gate-review-2026-10.md](docs/factory-gate-review-2026-10.md). Paid API spend is $0 until the gate.
 
 > Update this as the **last commit before you switch away**, not when you return.
 
@@ -34,10 +34,14 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 
 ## Do not
 
-- **Do not merge or push anything to `main` until the directory review resolves.**
+- **Do not merge or push anything to `main` until the plugin is approved and published in the directory.**
   The Claude plugin directory tracks `main` and polls it about every 6 hours; any
   new commit becomes a new version that needs its own scan and review. This
-  includes PR #5 (verify fix) and Dependabot PRs. Other branches are safe.
+  includes PR #5 (verify fix) and Dependabot PRs. Other branches are safe. The pre-push hook
+  (`scripts/git-hooks/pre-push`) refuses any push to `main` unless `CADENCE_ALLOW_MAIN_PUSH=1` is
+  set, and the local `chore/directory-prep` branch has no upstream: push it only with an explicit
+  refspec (`git push origin chore/directory-prep:chore/directory-prep`), never with a bare `git push`
+  or an IDE "Sync".
 - **Do not tag `v0.3.0` or automate the marketplace release.** Still held for the
   directory review.
 - **Do not merge `factory` into `main` before the 2026-11-13 gate.** Skill stubs on
@@ -176,6 +180,18 @@ sandbox (2026-10-02), but no live end-to-end demo yet.
 - Docs: the key check in [docs/FACTORY.md](docs/FACTORY.md); how to check a secret by its length in [docs/factory-sandbox-setup.md](docs/factory-sandbox-setup.md).
 - **Done:** the key was set and the product repo's tickets have run since.
 
+## Gate review (2026-10-05): decision pending
+
+`gate-001` finished. Under the rules signed before any data, Q1 (the factory beats a plain agent) failed, so that claim is dropped. Q2 (the learning loop helps) showed no gain, so the learning-loop kill condition is met. Running the eval also exposed validity limits: agents could not run a shell (`socat` was missing), a cost miscount cut the trials from 3 to 2, and the run hit the API workspace's usage limit near the end. None of these reopens the verdict. The full findings, the disclosed criterion change and the recommended plan are in [docs/factory-gate-review-2026-10.md](docs/factory-gate-review-2026-10.md).
+
+**Recommended (the maintainer decides):** stop factory mode at 2026-11-13, archive-tag `factory`, and never merge it. Spend $0 on the API until then. Ship rc.3 when the directory approves, then the core fixes and the rewording as rc.4. Publish an honest write-up as a negative result. Until the decision, add no new `factory` labels on any repo.
+
+**Decisions pending:**
+1. Commit now to the stop at the gate, or decide on 2026-11-13.
+2. The private product repos: disable the factory, or keep it as personal tooling with no claims.
+3. The factory API keys: disable them now, or at the gate.
+4. The write-up: verdict in words only, or aggregate numbers too.
+
 ## Priority to the Nov 13 gate (updated 2026-10-03)
 
 The phase-1 plan has five steps to the 2026-11-13 kill-or-continue call. The
@@ -200,10 +216,10 @@ backlog below).
 
 | Criterion | Now |
 |---|---|
-| The learning loop beats frozen rules | Measured 2026-10-04 (private; see the preregistration verdict) |
+| The learning loop beats frozen rules | **No gain** under the preregistered rule (gate-001, 2026-10-04): the kill condition is met as written. Numbers stay private |
 | Agent PRs merged within 30 days, at least 50% | 16 of 16: 10 on two private product repos, 6 on two public repos |
 | Median cost per ticket, at most $20 | $0.59 (highest $6.69, a ticket hit by the empty-key bug, since fixed) |
-| At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 2 of 2 (`envguard`, `cronspeak`) |
+| At least 2 public repos (own repos allowed) with a committed `.cadence/cadence.yaml` and a merged factory PR | 2 of 2 (`envguard`, `cronspeak`). Relaxed on 2026-10-03 from ">= 3 outside public repos", which stands at 0 of 3 |
 | At least 1 learned rule that caught a real repeat | 0 (the sandbox rule prevented a repeat at spec time, which does not count) |
 
 ## Product backlog: generic fixes for every factory user (added 2026-10-03)
@@ -220,7 +236,7 @@ as the 2026-11-13 gate.
 |---|---|---|---|---|
 | 1 | `/cadence-factory-setup` | One command reads the repo's CI and writes the gate, protects existing tests (nested folders included), sets caps, runs a health check, proposes starter issues and opens the setup PR | A fresh repo goes from install to its first draft PR with no hand edits | Done 2026-10-03: a fresh Flutter repo went from install to its first merged factory PR (a DST bug fix with a regression test, $0.48) with no hand edits to generated files; the lessons (pin the toolchain, a drifted formatter, LF scripts) are in the skills |
 | 5 | Privacy check on this repo | CI refuses a commit or commit message that names a private repo or a personal email address | The check runs on every push | Done 2026-10-03: CI job `privacy` on every push and PR, plus a pre-push hook; the deny-list comes from a secret or `gh` at check time, never from the repo |
-| 11 | Done 2026-10-04 (`7986f82`, merged in `a9c1ccc`): TS/JS statements joined until their specifier, Python parentheses and backslashes; comments and strings blanked; reported at the specifier line |
+| 11 | Boundary checker reads multi-line imports | A Prettier-wrapped TS import and a parenthesised Python import are checked like one-line imports | Tests for both shapes | Done 2026-10-04 (`7986f82`, merged in `a9c1ccc`) |
  x,
 } from '../describe/index.js'` is checked like a one-line import (today only the first line is read, so the learned check misses it) | A test with a multi-line TS import and a parenthesised Python import, both flagged | Found 2026-10-03 setting up a TypeScript repo |
 | 12 | Setup that strangers finish | `verify.sh` picks the first Python that can `import yaml` (or `CADENCE_PYTHON`), not just `python3`; the skill's `git add` list covers every file `/cadence-init` writes (`standards/`, `CLAUDE.md`, `.gitattributes`, formatter ignores); setup adds the copied files to the repo's formatter and linter ignores; `PATTERNS.md` template per stack (library, service, app) instead of the Flutter-style one; the profile accepts pip extras (`.[dev]`) | A fresh Python and a fresh TypeScript repo set up with no workaround | Found 2026-10-03 on `envguard` and `cronspeak` |
