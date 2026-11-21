@@ -1,5 +1,8 @@
 # Cadence
 
+[![ci](https://github.com/nik190799/cadence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nik190799/cadence/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
+
 A stack-agnostic, self-improving AI development framework — packaged as
 a Claude Code plugin. Four layers (Patterns / Process / Automated gates
 / Launch) plus a retrospective loop that lets the framework grow as

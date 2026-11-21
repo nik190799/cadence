@@ -56,7 +56,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: python -m pip install --quiet pyyaml pytest
+        run: python -m pip install --quiet pyyaml pytest jsonschema
       - name: Run boundary-checker tests
         run: python -m pytest tests/ -v
 
