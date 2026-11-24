@@ -43,8 +43,9 @@ Every attempt is scanned (`observe`) and its observation and findings are
 appended to the `cadence/state` branch. The learn chain then runs in the
 same build run: it reads closed agent PRs (the human's edits, review
 comments), and a single, serialized retro job climbs the ladder and opens
-one rolling PR against `.cadence/` that a human merges. The hourly sweep
-runs the same chain when something is due. How it works, the data model
+one rolling PR against `.cadence/` that a human merges. The hourly sweep,
+if the repo opts in to it (the template ships without a schedule), runs
+the same chain when something is due. How it works, the data model
 and the metrics: [LEARNING.md](LEARNING.md).
 
 ## Phases and gates
@@ -167,7 +168,7 @@ key: that still fails inside `claude-code-action` and is booked at the cap.
 | `publish` | spec (intake succeeded, or failed its key check), or build past the gate | App token (contents, pull requests) to push; `GITHUB_TOKEN` contents read, issues write, checks write | Posts the spec with HTML comments and invisible characters removed (`spec-ready`), or picks the attempt that passed (the first, else the retry: a green verify job with the verdict `pass`), pushes `cadence/issue-N`, posts the `cadence/verify` check for that attempt's tree and opens a draft PR (`pr-open`; the body gives the cost of both attempts and says when the retry passed), or labels `dod-failed` / `needs-human` with the failed step (a fixed word; `timeout` when verify did not finish) and one fixed sentence about the retry (including a retry whose key check failed). When the key check of `intake` or `agent` failed, it posts one fixed comment instead (the `ANTHROPIC_API_KEY` secret is missing or empty, how to set it, how to check it by its length, that nothing was spent, and how to try again) and labels `needs-human` |
 | `ledger` | always, for spec runs and builds past the gate | App token | Books cost and outcome in `runs/` on the `cadence/state` branch, the retry as its own record (`<run>.retry1`). A model job with no reported cost is booked at the full per-run cap, except one that failed at its key check (its `preflight` output is `no-key`): $0, `cost_source` `preflight:no-key`; `dod` is the verdict of a verify job that finished, `unknown` when it did not. For builds, checks both observers' bundles (sha256, schemas: `signals.py finalize`) and books `observations/`, `findings/`, `patches/` and `prs/`, create-only (`signals.py put`). The PR is booked on the attempt that was published |
 | `release` | always, when the gate took the claim, after every retry job | App token | `claim.py release` |
-| `reconcile` | hourly schedule | App token | `reconcile.py`; then `signals.py due` says whether the learn chain runs |
+| `reconcile` | a `stage=reconcile` dispatch, or the hourly schedule if the repo opts in (off by default: it spends Actions minutes) | App token | `reconcile.py`; then `signals.py due` says whether the learn chain runs |
 | `harvest` | in a build run once `ledger` succeeded (whatever the verdict); hourly when due; or a default-branch dispatch with `stage=learn`. Never in a spec run or on any other event, and not after a cancel | `GITHUB_TOKEN`: contents, pull requests, issues and actions read | Waits in the gate's queue (`queue: max`). Reads closed factory PRs (PR heads fetched as objects, never checked out): the human's edits, `/cadence-forbid` and `/cadence-class`, review comments from users with write access. Checks the learn budget (`ledger.py check --pool learn`) |
 | `classify` | only if `learning.classify` is on and the learn budget allows | `GITHUB_TOKEN`: contents read; `ANTHROPIC_API_KEY` | First runs the key check (above); the `cadence-findings` skill labels review comments with enums; no shell, one output file |
 | `learn-record` | after harvest | App token | Checks the labels (`signals.py apply-classified`), books post-PR findings, harvest and decision markers, the learn marker, classify's spend (run id `<run>.learn`, beside a build's own record; $0 when classify failed at its key check, else the learn cap when no cost was reported) and the daily metrics snapshot on `cadence/state` |
