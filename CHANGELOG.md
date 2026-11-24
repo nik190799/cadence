@@ -6,6 +6,14 @@ numbers follow [Semantic Versioning 2.0](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The factory workflow template ships without the hourly schedule.**
+  The `17 * * * *` cron started the 20-job workflow several times a day on
+  every repo it was installed in and spent GitHub Actions minutes. Run the
+  reconciler or learn chain with a `stage=reconcile` / `stage=learn`
+  dispatch; a build run still runs the learn chain. A comment in the
+  template shows how to opt back in.
+
 ### Fixed
 - **`tool/check_boundaries.py` reads imports that span lines.** It read
   one line at a time, so a Prettier-wrapped `import {\n  a,\n} from

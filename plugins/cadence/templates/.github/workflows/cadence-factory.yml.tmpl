@@ -103,8 +103,13 @@ on:
         required: true
         type: choice
         options: [spec, build, reconcile, learn]
-  schedule:
-    - cron: "17 * * * *" # hourly, off the hour: the reconciler, then the learn chain when due
+  # No schedule by default: an hourly cron starts this 20-job workflow several
+  # times a day and spends GitHub Actions minutes on every repo it is
+  # installed in. Run the reconciler or the learn chain by hand with
+  # workflow_dispatch (stage=reconcile or stage=learn); a build run still
+  # runs the learn chain itself. To opt back in to the hourly sweep, add:
+  # schedule:
+  #   - cron: "17 * * * *"
 # No push trigger, ever. Claims (cadence/claim/N), work branches
 # (cadence/issue-N), the ledger (cadence/state) and the retro branch
 # (cadence/retro) are all pushes. No pull_request, pull_request_target or

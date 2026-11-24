@@ -73,7 +73,8 @@ In build runs, `observe` sits between `verify` and `ledger`, and
   a spec run, a label event and a plain comment never reach `harvest`. The
   build run stays in progress, and keeps the issue's queue, until the chain
   is done; a cancelled run starts no learning;
-- in the hourly sweep, when `signals.py due` reports new observations or
+- in the hourly sweep (only if the repo adds the schedule back; the
+  template ships without one), when `signals.py due` reports new observations or
   closed PRs that have not been harvested (a PR closed after its build is
   harvested here, or by the next build's chain);
 - on `workflow_dispatch` with `stage=learn`, on the default branch.

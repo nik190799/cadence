@@ -113,7 +113,7 @@ def _dump(obj) -> str:
 
 
 def test_no_trigger_that_a_push_or_fork_can_fire() -> None:
-    assert set(TRIGGERS) == {"issues", "issue_comment", "workflow_dispatch", "schedule"}
+    assert set(TRIGGERS) == {"issues", "issue_comment", "workflow_dispatch"}
     for forbidden in ("push", "pull_request", "pull_request_target", "workflow_run"):
         assert forbidden not in TRIGGERS
 
@@ -239,8 +239,9 @@ def test_dispatch_offers_the_learn_stage_and_names_the_run() -> None:
     stage = TRIGGERS["workflow_dispatch"]["inputs"]["stage"]
     assert stage["options"] == ["spec", "build", "reconcile", "learn"]
     assert "(inputs.stage == 'learn' && 'learn')" in WF["run-name"]
-    # Still one hourly schedule: the sweep, then the learn chain when due.
-    assert [entry["cron"] for entry in TRIGGERS["schedule"]] == ["17 * * * *"]
+    # No schedule by default: the sweep costs Actions minutes on every repo the
+    # workflow is installed in. Reconcile and learn are dispatched by hand.
+    assert "schedule" not in TRIGGERS
 
 
 def test_route_skips_learn_dispatches() -> None:
